@@ -268,14 +268,19 @@ fn stop_capture(state: State<'_, CaptureState>) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SetApiKeysPayload {
+    deepgram_key: String,
+    ollama_key: String,
+}
+
 #[tauri::command]
 fn set_api_keys(
     state: State<'_, ConfigState>,
-    deepgram_key: String,
-    ollama_key: String,
+    payload: SetApiKeysPayload,
 ) -> Result<(), String> {
     let mut cfg = state.config.lock().unwrap();
-    cfg.set_keys(deepgram_key, ollama_key);
+    cfg.set_keys(payload.deepgram_key, payload.ollama_key);
     Ok(())
 }
 
