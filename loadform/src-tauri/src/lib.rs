@@ -9,6 +9,11 @@ mod config;
 use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
 use config::{AppConfig, ConfigState};
 
+use ollama_rs::{
+    generation::completion::{request::GenerationRequest, GenerationResponse},
+    Ollama,
+};
+
 // ─── Shared State ───────────────────────────────────────────────────────────
 
 pub struct CaptureState {
@@ -60,13 +65,6 @@ pub struct LoadFormDataWithConfidence {
 pub struct ExtractionRequest {
     pub transcript: String,
 }
-
-// ─── Ollama Types ───────────────────────────────────────────────────────────
-
-use ollama_rs::{
-    generation::completion::{request::GenerationRequest, GenerationResponse},
-    Ollama,
-};
 
 // ─── LLM Extraction ─────────────────────────────────────────────────────────
 
@@ -124,46 +122,77 @@ Transcript:
         req.transcript
     );
 
-    let request = GenerationRequest::new(model, prompt);
-
     let raw_content = if is_local {
-        // Local Ollama — no API key needed
-        let ollama = Ollama::default(); // http://127.0.0.1:11434
+        // Local Ollama — native ollama-rs, no API key needed
+        let ollama = Ollama::default();
+        let request = GenerationRequest::new(model, prompt);
         let response: GenerationResponse = ollama
             .generate(request)
             .await
-            .map_err(|e| format!("Ollama generation failed: {}", e))?;
+            .map_err(|e| format!("Local Ollama generation failed: {}", e))?;
         response.response
     } else {
-        // Remote Ollama — API key via custom reqwest client with default headers
-        let url = url::Url::parse(&base_url)
-            .map_err(|e| format!("Invalid OLLAMA_BASE_URL: {}", e))?;
-        let host = url.host_str().unwrap_or(&base_url).to_string();
-        let port = url.port().unwrap_or(80);
+        // Remote / cloud — OpenAI-compatible API via raw reqwest
+        // Many services (OpenRouter, Together AI, etc.) expose /v1/chat/completions
+        #[derive(Debug, Serialize, Deserialize)]
+        struct ChatMessage {
+            role: String,
+            content: String,
+        }
 
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-                .map_err(|e| format!("Invalid API key header: {}", e))?,
-        );
+        #[derive(Debug, Serialize)]
+        struct ChatCompletionRequest {
+            model: String,
+            messages: Vec<ChatMessage>,
+            temperature: f64,
+        }
 
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
+        #[derive(Debug, Deserialize)]
+        struct ChatCompletionResponse {
+            choices: Vec<ChatCompletionChoice>,
+        }
 
-        let ollama = Ollama::builder()
-            .host(host)
-            .port(port)
-            .reqwest_client(client)
-            .build();
+        #[derive(Debug, Deserialize)]
+        struct ChatCompletionChoice {
+            message: ChatMessage,
+        }
 
-        let response: GenerationResponse = ollama
-            .generate(request)
+        let api_req = ChatCompletionRequest {
+            model,
+            messages: vec![ChatMessage {
+                role: "system".to_string(),
+                content: prompt,
+            }],
+            temperature: 0.1,
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!("{}/v1/chat/completions", base_url);
+
+        let mut builder = client.post(&url).json(&api_req);
+        if !api_key.is_empty() {
+            builder = builder.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = builder.send().await.map_err(|e| format!("HTTP error: {}", e))?;
+        let status = response.status();
+        let body_text = response
+            .text()
             .await
-            .map_err(|e| format!("Ollama generation failed: {}", e))?;
-        response.response
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!("API error {}: {}", status, body_text));
+        }
+
+        let api_response: ChatCompletionResponse = serde_json::from_str(&body_text)
+            .map_err(|e| format!("Failed to parse API response: {}. Body: {}", e, body_text))?;
+
+        api_response
+            .choices
+            .get(0)
+            .map(|c| c.message.content.clone())
+            .unwrap_or_default()
     };
 
     // The LLM response may contain markdown code blocks — strip them
