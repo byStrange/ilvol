@@ -553,7 +553,6 @@ async function fetchAndSetApiKeys() {
       if (row.provider === 'ollama') keys.ollama = row.key_value;
     }
 
-    // Push keys to Rust
     await tauriInvoke('set_api_keys', {
       deepgram_key: keys.deepgram,
       ollama_key: keys.ollama,
