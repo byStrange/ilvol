@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:js": "node --experimental-vm-modules src/templates.test.js && node --experimental-vm-modules src/transcription.test.js",
+    "test:rs": "cd src-tauri && cargo test",
+    "test": "npm run test:js && npm run test:rs"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"

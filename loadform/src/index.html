@@ -1,39 +1,227 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="stylesheet" href="styles.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Tauri App</title>
-    <script type="module" src="/main.js" defer></script>
+    <title>LoadForm</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              slate: {
+                850: '#1e293b',
+                900: '#0f172a',
+                950: '#020617',
+              },
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body { background-color: #0f172a; color: #e2e8f0; }
+      .confidence-bar {
+        transition: width 0.3s ease;
+      }
+      .fade-in {
+        animation: fadeIn 0.3s ease-in;
+      }
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(4px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .pulse-dot {
+        animation: pulse 1.5s infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.4; }
+      }
+    </style>
   </head>
+  <body class="min-h-screen bg-slate-900 text-slate-200 antialiased">
+    <div id="app" class="max-w-3xl mx-auto px-4 py-6">
+      <!-- Header -->
+      <header class="flex items-center justify-between mb-8">
+        <div class="flex items-center gap-3">
+          <div class="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-900">
+            L
+          </div>
+          <h1 class="text-2xl font-bold text-white">LoadForm</h1>
+        </div>
+        <div class="flex items-center gap-3">
+          <span id="status-badge" class="text-xs px-2 py-1 rounded bg-slate-700 text-slate-400 hidden">Ready</span>
+          <button
+            id="settings-btn"
+            class="text-sm px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+            title="Settings"
+          >
+            ⚙️
+          </button>
+        </div>
+      </header>
 
-  <body>
-    <main class="container">
-      <h1>Welcome to Tauri</h1>
+      <!-- Capture Section -->
+      <section id="capture-section" class="mb-6">
+        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
+          <h2 class="text-lg font-semibold mb-4 text-white">🎙️ Audio Capture</h2>
 
-      <div class="row">
-        <a href="https://tauri.app" target="_blank">
-          <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-        </a>
-        <a
-          href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"
-          target="_blank"
-        >
-          <img
-            src="/assets/javascript.svg"
-            class="logo vanilla"
-            alt="JavaScript logo"
-          />
-        </a>
-      </div>
-      <p>Click on the Tauri logo to learn more about the framework</p>
+          <!-- Mode Selector -->
+          <div class="flex gap-2 mb-4">
+            <button
+              id="mode-mic"
+              class="flex-1 py-2 px-3 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-sm font-medium transition-all"
+            >
+              🎤 Mic Input (Free)
+            </button>
+            <button
+              id="mode-system"
+              disabled
+              class="flex-1 py-2 px-3 rounded-lg bg-slate-700/50 text-slate-500 border border-slate-600 text-sm font-medium cursor-not-allowed"
+              title="Available in Pro plan"
+            >
+              🔊 System Audio (PRO)
+            </button>
+          </div>
 
-      <form class="row" id="greet-form">
-        <input id="greet-input" placeholder="Enter a name..." />
-        <button type="submit">Greet</button>
-      </form>
-      <p id="greet-msg"></p>
-    </main>
+          <!-- API Key Input -->
+          <div id="api-key-section" class="mb-4">
+            <label class="block text-xs text-slate-400 mb-1.5">Deepgram API Key</label>
+            <input
+              id="deepgram-key"
+              type="password"
+              placeholder="Paste your Deepgram API key here..."
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+            />
+          </div>
+
+          <!-- Capture Controls -->
+          <div class="flex items-center gap-4">
+            <button
+              id="start-capture-btn"
+              class="flex items-center gap-2 px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded-xl transition-all text-base"
+            >
+              <span id="capture-icon">🎙️</span>
+              <span id="capture-btn-text">Start Capture</span>
+            </button>
+
+            <div id="capturing-indicator" class="hidden flex items-center gap-2">
+              <span class="w-3 h-3 bg-red-500 rounded-full pulse-dot"></span>
+              <span class="text-sm text-red-400 font-medium">Listening...</span>
+            </div>
+          </div>
+
+          <!-- Live Transcript -->
+          <div id="transcript-area" class="mt-4 p-3 bg-slate-900 rounded-lg min-h-[80px] border border-slate-700 hidden">
+            <div class="text-xs text-slate-500 mb-1">Live Transcript:</div>
+            <div id="live-transcript" class="text-sm text-slate-300 leading-relaxed"></div>
+            <div id="interim-transcript" class="text-sm text-slate-500 italic mt-1"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Extract Section -->
+      <section id="extract-section" class="mb-6 hidden">
+        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
+          <div class="flex items-center justify-between mb-4">
+            <h2 class="text-lg font-semibold text-white">✨ Extract Load Details</h2>
+            <span id="extraction-status" class="text-xs text-slate-400 hidden">Processing...</span>
+          </div>
+
+          <!-- LLM Settings -->
+          <div class="grid grid-cols-2 gap-3 mb-4">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Ollama Base URL</label>
+              <input
+                id="ollama-url"
+                value="https://api.ollama.com"
+                class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Model</label>
+              <input
+                id="ollama-model"
+                value="llama3.1"
+                class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+          </div>
+          <div class="mb-4">
+            <label class="block text-xs text-slate-400 mb-1">Ollama API Key</label>
+            <input
+              id="ollama-key"
+              type="password"
+              placeholder="Paste your Ollama Cloud API key here..."
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+            />
+          </div>
+
+          <button
+            id="extract-btn"
+            class="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl transition-all text-base mb-2"
+          >
+            🔄 Complete & Extract Fields
+          </button>
+          <div id="extraction-spinner" class="hidden flex items-center justify-center gap-2 py-3">
+            <svg class="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24">
+              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
+              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span class="text-sm text-blue-400">Extracting with AI...</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Form Section -->
+      <section id="form-section" class="mb-6 hidden">
+        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
+          <h2 class="text-lg font-semibold mb-4 text-white">📋 Load Details</h2>
+          <p class="text-sm text-slate-400 mb-4">Review and edit each field. Colors show confidence — edit anything that looks wrong.</p>
+
+          <div id="fields-container" class="space-y-3">
+            <!-- Fields injected by JS -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Output Section -->
+      <section id="output-section" class="mb-6 hidden">
+        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
+          <h2 class="text-lg font-semibold mb-4 text-white">📤 Output for Driver</h2>
+
+          <div class="bg-slate-900 border border-slate-600 rounded-lg p-4 mb-4 font-mono text-sm text-slate-300 whitespace-pre-wrap" id="output-preview">
+            <!-- Preview injected by JS -->
+          </div>
+
+          <div class="flex gap-3">
+            <button
+              id="copy-btn"
+              class="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded-xl transition-all text-base"
+            >
+              📋 Copy to Clipboard
+            </button>
+            <button
+              id="new-load-btn"
+              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-xl transition-all text-base"
+            >
+              🔄 New Load
+            </button>
+          </div>
+
+          <p id="copy-feedback" class="text-sm text-emerald-400 text-center mt-3 hidden">✅ Copied to clipboard!</p>
+        </div>
+      </section>
+
+      <!-- Footer -->
+      <footer class="text-center text-xs text-slate-600 mt-8 pb-4">
+        LoadForm v0.1.0 — Built for dispatchers 🚛
+      </footer>
+    </div>
+
+    <script type="module" src="/main.js"></script>
   </body>
 </html>
