@@ -21,11 +21,6 @@ impl Default for CaptureState {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct StartCaptureRequest {
-    pub api_key: String,
-}
-
 // ─── Data Types ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
@@ -243,14 +238,14 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 fn start_capture(
     state: State<CaptureState>,
     app: AppHandle,
-    req: StartCaptureRequest,
+    api_key: String,
 ) -> Result<(), String> {
     let mut guard = state.handle.lock().unwrap();
     if guard.is_some() {
         return Err("Capture already running".to_string());
     }
 
-    let handle = start_mic_capture(app, req.api_key)?;
+    let handle = start_mic_capture(app, api_key)?;
     *guard = Some(handle);
     Ok(())
 }
