@@ -309,42 +309,109 @@ async fn capture_system_audio_windows(
     stop_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use wasapi::{
-        initialize_mta, AudioClient, Direction, SampleType, StreamMode, WaveFormat,
+        initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat,
     };
 
-    initialize_mta().map_err(|e| format!("WASAPI MTA init failed: {:?}", e))?;
+    // initialize_mta returns HRESULT, check with .is_err()
+    let mta_result = initialize_mta();
+    if mta_result.is_err() {
+        return Err(format!("WASAPI MTA init failed: {:?}", mta_result));
+    }
 
-    let device = wasapi::get_default_device(&Direction::Render,
-    )
-    .map_err(|e| format!("Failed to get default render device: {:?}", e))?;
+    // Use DeviceEnumerator::new().get_default_device(&Direction::Render)
+    let enumerator = DeviceEnumerator::new()
+        .map_err(|e| format!("Failed to create device enumerator: {:?}", e))?;
+    let device = enumerator
+        .get_default_device(&Direction::Render)
+        .map_err(|e| format!("Failed to get default render device: {:?}", e))?;
 
     let mut audio_client = device
         .get_iaudioclient()
         .map_err(|e| format!("Failed to get audio client: {:?}", e))?;
 
-    let wavefmt = WaveFormat::new(16, 16, &SampleType::Int, SAMPLE_RATE, 1, None)
-        .map_err(|e| format!("WaveFormat failed: {:?}", e))?;
+    // WaveFormat::new takes usize for sample rate, returns Self (not Result)
+    let wavefmt = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE as usize, CHANNELS as usize, None);
 
-    // Shared event-driven mode with loopback
+    let (def_time, min_time) = audio_client
+        .get_device_period()
+        .map_err(|e| format!("Failed to get device period: {:?}", e))?;
+
+    // Shared event-driven mode for loopback capture
     let mode = StreamMode::EventsShared {
         autoconvert: true,
-        buffer_duration_hns: 0,
+        buffer_duration_hns: min_time,
     };
 
     audio_client
-        .initialize_client(&wavefmt,
-        &Direction::Capture, // WASAPI loopback is technically a capture on render device
-        &mode,
-        )
+        .initialize_client(&wavefmt, &Direction::Capture, &mode)
         .map_err(|e| format!("AudioClient init failed: {:?}", e))?;
 
-    // NOTE: The wasapi crate 0.14 does NOT have a direct loopback flag.
-    // For true loopback we need the newer wasapi API or raw COM calls.
-    // As a workaround, we use cpal's loopback via a different approach below.
+    // Get event handle for event-driven mode
+    let h_event = audio_client
+        .set_get_eventhandle()
+        .map_err(|e| format!("Failed to get event handle: {:?}", e))?;
 
-    // For now, emit a clear error telling the user this needs Windows-specific work
-    drop(audio_client);
-    Err("System audio loopback requires advanced WASAPI setup. Please use Microphone mode for now, or contact support.".to_string())
+    let capture_client = audio_client
+        .get_audiocaptureclient()
+        .map_err(|e| format!("Failed to get capture client: {:?}", e))?;
+
+    let blockalign = wavefmt.get_blockalign();
+
+    audio_client
+        .start_stream()
+        .map_err(|e| format!("Failed to start stream: {:?}", e))?;
+
+    // Capture loop
+    loop {
+        // Check stop flag
+        if stop_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        // Wait for event with timeout
+        if h_event.wait_for_event(100).is_err() {
+            // Timeout or error, check stop flag and continue
+            continue;
+        }
+
+        // Read available frames
+        let next_packet_size = capture_client
+            .get_next_packet_size()
+            .map_err(|e| format!("Failed to get next packet size: {:?}", e))?;
+
+        let frames_to_read = match next_packet_size {
+            Some(size) => size as usize,
+            None => continue, // Exclusive mode - skip for now
+        };
+
+        if frames_to_read == 0 {
+            continue;
+        }
+
+        // Allocate buffer for raw bytes
+        let mut buffer = vec![0u8; frames_to_read * blockalign];
+        let (frames_read, _buffer_info) = capture_client
+            .read_from_device(&mut buffer)
+            .map_err(|e| format!("Failed to read from device: {:?}", e))?;
+
+        if frames_read == 0 {
+            continue;
+        }
+
+        // Convert f32 samples to i16 bytes
+        // WAVEFORMATEXTENSIBLE with Float subtype gives us f32 data
+        let bytes_read = frames_read as usize * blockalign;
+        let f32_samples: &[f32] = bytemuck::cast_slice(&buffer[..bytes_read]);
+        let i16_bytes = f32_samples_to_i16_bytes(f32_samples);
+
+        // Send to channel
+        if audio_tx.try_send(i16_bytes).is_err() {
+            // Channel full or closed, continue
+        }
+    }
+
+    let _ = audio_client.stop_stream();
+    Ok(())
 }
 
 // ─── f32 → i16 (little-endian bytes) ────────────────────────────────────────

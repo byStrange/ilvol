@@ -2262,6 +2262,7 @@ name = "loadform"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "bytemuck",
  "bytes",
  "cpal",
  "futures-util",
