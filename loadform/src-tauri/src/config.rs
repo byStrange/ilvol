@@ -16,9 +16,9 @@ impl AppConfig {
     pub fn new_empty() -> Self {
         Self {
             deepgram_api_key: String::new(),
-            ollama_base_url: "http://localhost:11434".to_string(),
+            ollama_base_url: "https://ollama.com".to_string(),
             ollama_api_key: String::new(),
-            ollama_model: "llama3.1".to_string(),
+            ollama_model: "gemini-3-flash-preview:cloud".to_string(),
         }
     }
 
@@ -29,11 +29,11 @@ impl AppConfig {
             deepgram_api_key: std::env::var("DEEPGRAM_API_KEY")
                 .unwrap_or_default(),
             ollama_base_url: std::env::var("OLLAMA_BASE_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string()),
+                .unwrap_or_else(|_| "https://ollama.com".to_string()),
             ollama_api_key: std::env::var("OLLAMA_API_KEY")
                 .unwrap_or_default(),
             ollama_model: std::env::var("OLLAMA_MODEL")
-                .unwrap_or_else(|_| "llama3.1".to_string()),
+                .unwrap_or_else(|_| "gemini-3-flash-preview".to_string()),
         }
     }
 
