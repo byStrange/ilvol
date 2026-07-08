@@ -1,0 +1,168 @@
+# LoadForm — Dispatcher Load Capture Tool
+
+## Overview
+A desktop app for Uzbekistan-based logistics dispatchers working remotely with US trucking companies.
+
+The app listens to broker calls (microphone or system audio), transcribes speech in real-time using Deepgram, extracts structured load details via an LLM (Ollama Cloud, OpenAI-compatible API), and generates clean output formatted for drivers via customizable templates.
+
+---
+
+## Target User
+- Uzbekistan-based dispatchers working remotely for US trucking/logistics companies
+- They communicate with US brokers via phone (RingCentral, Zoom, Teams)
+- Need to capture load details quickly while on a call
+- Output goes to drivers via SMS/WhatsApp/email
+
+---
+
+## Core Flow
+1. Dispatcher opens app before/during a broker call
+2. Presses "Start Capture" — chooses Mic or System Audio
+3. Audio streams to Deepgram for real-time transcription
+4. Transcript sent to LLM (Ollama Cloud) to extract structured fields
+5. Fields displayed with confidence indicators (color-coded + percentage)
+6. Dispatcher reviews and edits if needed
+7. Presses "Copy for Driver" — output formatted via selected template
+8. Paste into WhatsApp/SMS/email to driver
+
+---
+
+## Extracted Fields
+| Field | Example | Confidence |
+|-------|---------|------------|
+| Pickup Date/Time | Tue 6/24, 8:00 AM | 94% |
+| Pickup Location | Amarillo, TX | 98% |
+| Delivery Date/Time | Thu 6/26, 6:00 AM | 91% |
+| Delivery Location | Tulsa, OK | 96% |
+| Commodity | Frozen chicken | 87% |
+| Equipment Type | Reefer | 99% |
+| Rate | $2.80/mile ($2,100 total) | 89% |
+| Weight | 43,000 lbs | 95% |
+| Additional Notes | Lumpers required, no touch | 82% |
+
+---
+
+## Tech Stack
+| Layer | Choice |
+|-------|--------|
+| Framework | Tauri (Rust backend + Web frontend) |
+| Platform | Windows (primary), macOS later |
+| Frontend | Vanilla HTML/CSS/JS + Tailwind CSS |
+| Audio Capture | Web Audio API (mic), Windows API hooks (system audio) |
+| Transcription | Deepgram (real-time streaming) |
+| Extraction | Ollama Cloud (OpenAI-compatible API) |
+| Payments | Local Uzbek provider (Octobank/Visa-compatible) |
+| Updates | Tauri built-in auto-updater |
+| Version Control | Git + GitHub |
+
+---
+
+## Audio Capture Modes
+
+### Mic Input (FREE)
+- Dispatcher repeats broker info into mic
+- No legal concerns
+- Zero latency, works out of the box
+
+### System Audio (PAID)
+- Captures RingCentral/Zoom/Teams audio directly
+- Requires user consent and legal acknowledgment
+- "Magic" feature — differentiator
+- **MUST show legal disclaimer:** "System audio capture may be subject to call-recording laws. You are responsible for ensuring all parties consent."
+
+---
+
+## Confidence UI
+- Green border = high confidence (>80%)
+- Yellow border = medium confidence (50–80%)
+- Red border = low confidence (<50%)
+- Percentage badge on each field
+- Fields below 70% auto-flagged with "⚠️ Needs Review" badge
+- Dispatcher can manually edit any field before copying
+
+---
+
+## Output Templates
+- Default template provided out of the box (clean text block)
+- Users can create/edit custom templates with variables:
+  - `{pickup_location}`, `{pickup_datetime}`, `{delivery_location}`, `{delivery_datetime}`, `{commodity}`, `{equipment}`, `{rate}`, `{weight}`, `{notes}`
+- Template preview shown before copying
+
+### Default Template Example
+```
+LOAD DETAILS
+Pickup: {pickup_location} — {pickup_datetime}
+Delivery: {delivery_location} — {delivery_datetime}
+Rate: {rate}
+Weight: {weight}
+Equipment: {equipment}
+Notes: {notes}
+```
+
+---
+
+## Monetization Model
+
+### Free Tier
+- Mic input capture
+- Default template only
+- Up to 50 loads/month
+- Basic confidence UI
+
+### Paid Tier ($X/month, TBD)
+- System audio capture (the hook)
+- Unlimited loads
+- Custom templates
+- Load history & search (future)
+
+### Payments
+- Local Uzbek provider supporting Visa (Octobank or similar)
+- Users pay in UZS or USD — TBD after provider research
+- Monthly subscription
+
+---
+
+## MVP Scope (Phase 1)
+- [ ] Tauri scaffold with vanilla frontend
+- [ ] Mic audio capture → Deepgram transcription
+- [ ] LLM extraction → structured fields
+- [ ] Confidence UI (color-coded + percentages)
+- [ ] Default output template + copy button
+- [ ] GitHub repo with README
+- [ ] Windows build + Tauri updater
+
+## Phase 2
+- [ ] System audio capture (Windows hooks)
+- [ ] Custom templates
+- [ ] Payment integration (local provider)
+- [ ] Load history & search
+- [ ] macOS build
+
+---
+
+## Name Candidates
+- LoadForm
+- Dispatcher Pro
+- LoadScribe
+- BrokerFlow
+- DispatchNote
+
+(Final name TBD before launch)
+
+---
+
+## Key Risks
+1. **System audio legal compliance** — must show clear disclaimers
+2. **Deepgram/Ollama Cloud costs** — monitor usage, cap free tier
+3. **LLM extraction accuracy** — broker speech is messy, confidence UI mitigates
+4. **Payment provider** — research Octobank/similar APIs before integrating
+
+---
+
+## Next Steps
+1. Create GitHub repo
+2. Scaffold Tauri project (vanilla HTML/CSS/JS + Tailwind)
+3. Set up Deepgram API key
+4. Set up Ollama Cloud API key
+5. Build mic capture → transcription → extraction → UI flow
+6. Ship MVP to first 5 users
