@@ -1,15 +1,10 @@
 /**
  * LoadForm - Main Application Logic
  *
- * Manages the full flow:
- * 1. Capture audio via Deepgram → accumulate transcript
- * 2. Extract structured fields via Ollama Cloud LLM
- * 3. Display with confidence indicators
- * 4. Render driver-friendly output via templates
- * 5. Copy to clipboard
+ * Audio capture now runs in Rust (cpal + Deepgram websocket).
+ * Frontend receives transcript chunks via Tauri events.
  */
 
-import { startTranscription } from './transcription.js';
 import {
   DEFAULT_TEMPLATE,
   renderTemplate,
@@ -19,8 +14,6 @@ import {
 } from './templates.js';
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
-// In Tauri v2 with vanilla JS, window.__TAURI__ is injected after module load.
-// We access it inside functions, not at module level.
 function tauriInvoke(cmd, args = {}) {
   if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.core) {
     return window.__TAURI__.core.invoke(cmd, args);
@@ -30,7 +23,7 @@ function tauriInvoke(cmd, args = {}) {
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-let controller = null;
+let isCapturing = false;
 let accumulatedTranscript = '';
 let currentExtractedData = null;
 let currentConfidence = {};
@@ -103,7 +96,7 @@ const FIELDS = [
 // ─── Capture Flow ───────────────────────────────────────────────────────────
 
 async function toggleCapture() {
-  if (controller && controller.isCapturing()) {
+  if (isCapturing) {
     await stopCapture();
   } else {
     await startCapture();
@@ -130,34 +123,22 @@ async function startCapture() {
   els.outputSection.classList.add('hidden');
 
   try {
-    controller = await startTranscription(apiKey, (chunk) => {
-      if (chunk.is_final) {
-        accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunk.text;
-        updateLiveTranscript();
-      } else {
-        els.interimTranscript.textContent = chunk.text;
-      }
-    });
-
+    await tauriInvoke('start_capture', { apiKey });
+    isCapturing = true;
     setCapturingUI(true);
   } catch (err) {
     console.error('Failed to start capture:', err);
-    alert('Failed to start capture: ' + err.message);
+    alert('Failed to start capture: ' + err);
   }
 }
 
 async function stopCapture() {
-  if (!controller) return;
+  if (!isCapturing) return;
 
   try {
-    const finalTranscript = await controller.stop();
-    if (finalTranscript) {
-      accumulatedTranscript = finalTranscript;
-    }
-    controller = null;
-
+    await tauriInvoke('stop_capture');
+    isCapturing = false;
     setCapturingUI(false);
-    updateLiveTranscript();
 
     // Show the extract section
     els.extractSection.classList.remove('hidden');
@@ -187,6 +168,23 @@ function updateLiveTranscript() {
   els.liveTranscript.textContent = accumulatedTranscript;
 }
 
+function onTranscriptChunk(chunk) {
+  if (chunk.is_final) {
+    accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunk.text;
+    updateLiveTranscript();
+  } else {
+    els.interimTranscript.textContent = chunk.text;
+  }
+}
+
+function onTranscriptComplete(event) {
+  const text = event.payload?.text || '';
+  if (text) {
+    accumulatedTranscript = text;
+    updateLiveTranscript();
+  }
+}
+
 // ─── Extraction Flow ──────────────────────────────────────────────────────
 
 async function handleExtract() {
@@ -203,11 +201,6 @@ async function handleExtract() {
   if (apiKey) saveKey(STORAGE_KEYS.OLLAMA_KEY, apiKey);
   if (baseUrl) saveKey(STORAGE_KEYS.OLLAMA_URL, baseUrl);
   if (model) saveKey(STORAGE_KEYS.OLLAMA_MODEL, model);
-
-  if (!apiKey) {
-    // Allow without key for demo/testing, but warn
-    console.warn('No Ollama API key set. Extraction may fail.');
-  }
 
   setExtractingUI(true);
 
@@ -314,10 +307,9 @@ async function copyToClipboard() {
   try {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       await navigator.clipboard.writeText(text);
-    } else if (invoke) {
+    } else if (typeof window.__TAURI__ !== 'undefined') {
       await tauriInvoke('copy_to_clipboard', { text });
     } else {
-      // Fallback
       const textarea = document.createElement('textarea');
       textarea.value = text;
       document.body.appendChild(textarea);
@@ -340,7 +332,7 @@ function resetForm() {
   accumulatedTranscript = '';
   currentExtractedData = null;
   currentConfidence = {};
-  controller = null;
+  isCapturing = false;
 
   els.liveTranscript.textContent = '';
   els.interimTranscript.textContent = '';
@@ -363,4 +355,14 @@ window.addEventListener('DOMContentLoaded', () => {
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
   els.newLoadBtn.addEventListener('click', resetForm);
+
+  // Listen for transcript events from Rust backend
+  if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.event) {
+    window.__TAURI__.event.listen('transcript:chunk', (event) => {
+      onTranscriptChunk(event.payload);
+    });
+    window.__TAURI__.event.listen('transcript:complete', (event) => {
+      onTranscriptComplete(event);
+    });
+  }
 });

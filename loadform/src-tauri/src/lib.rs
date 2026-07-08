@@ -1,5 +1,30 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Mutex;
+use tauri::{AppHandle, State};
+
+mod audio_capture;
+
+use audio_capture::{start_mic_capture, CaptureHandle};
+
+// ─── Shared State ───────────────────────────────────────────────────────────
+
+pub struct CaptureState {
+    handle: Mutex<Option<CaptureHandle>>,
+}
+
+impl Default for CaptureState {
+    fn default() -> Self {
+        Self {
+            handle: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StartCaptureRequest {
+    pub api_key: String,
+}
 
 // ─── Data Types ─────────────────────────────────────────────────────────────
 
@@ -214,11 +239,43 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 
 // ─── Tauri Entry ────────────────────────────────────────────────────────────
 
+#[tauri::command]
+fn start_capture(
+    state: State<CaptureState>,
+    app: AppHandle,
+    req: StartCaptureRequest,
+) -> Result<(), String> {
+    let mut guard = state.handle.lock().unwrap();
+    if guard.is_some() {
+        return Err("Capture already running".to_string());
+    }
+
+    let handle = start_mic_capture(app, req.api_key)?;
+    *guard = Some(handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_capture(state: State<CaptureState>) -> Result<(), String> {
+    let mut guard = state.handle.lock().unwrap();
+    if let Some(handle) = guard.take() {
+        handle.stop();
+        Ok(())
+    } else {
+        Err("No capture running".to_string())
+    }
+}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![extract_load_data, copy_to_clipboard])
+        .manage(CaptureState::default())
+        .invoke_handler(tauri::generate_handler![
+            extract_load_data,
+            copy_to_clipboard,
+            start_capture,
+            stop_capture,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
