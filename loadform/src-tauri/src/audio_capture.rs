@@ -93,6 +93,7 @@ pub fn list_audio_devices() -> Vec<AudioDevice> {
 // ─── Start Capture (from selected device) ───────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CaptureOptions {
     pub device_id: String,
     pub mix_system_audio: bool, // if true, mix mic + system
