@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, State};
 
 mod audio_capture;
+mod config;
 
 use audio_capture::{start_mic_capture, CaptureHandle};
+use config::{AppConfig, ConfigState};
 
 // ─── Shared State ───────────────────────────────────────────────────────────
 
@@ -57,14 +59,6 @@ pub struct LoadFormDataWithConfidence {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExtractionRequest {
     pub transcript: String,
-    #[serde(default)]
-    pub provider: String,
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub api_key: String,
-    #[serde(default)]
-    pub base_url: String,
 }
 
 // ─── Ollama Cloud / OpenAI Compatible API Types ───────────────────────────────
@@ -95,18 +89,17 @@ struct ChatCompletionResponse {
 // ─── LLM Extraction ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-async fn extract_load_data(req: ExtractionRequest) -> Result<LoadFormDataWithConfidence, String> {
-    let base_url = if req.base_url.is_empty() {
-        "https://api.ollama.com".to_string()
-    } else {
-        req.base_url
-    };
+async fn extract_load_data(
+    config: State<'_ , ConfigState>,
+    req: ExtractionRequest,
+) -> Result<LoadFormDataWithConfidence, String> {
+    let base_url = config.config.ollama_base_url.clone();
+    let model = config.config.ollama_model.clone();
+    let api_key = config.config.ollama_api_key.clone();
 
-    let model = if req.model.is_empty() {
-        "llama3.1".to_string()
-    } else {
-        req.model
-    };
+    if api_key.is_empty() {
+        return Err("OLLAMA_API_KEY not configured".to_string());
+    }
 
     let prompt = format!(
         r#"You are a logistics data extraction assistant. Given a broker conversation transcript, extract the following fields:
@@ -166,9 +159,7 @@ Transcript:
 
     let mut builder = client.post(&url).json(&api_req);
 
-    if !req.api_key.is_empty() {
-        builder = builder.header("Authorization", format!("Bearer {}", req.api_key));
-    }
+    builder = builder.header("Authorization", format!("Bearer {}", api_key));
 
     let response = builder.send().await.map_err(|e| format!("HTTP error: {}", e))?;
 
@@ -237,15 +228,17 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 #[tauri::command]
 fn start_capture(
     state: State<CaptureState>,
+    config: State<ConfigState>,
     app: AppHandle,
-    api_key: String,
 ) -> Result<(), String> {
+    config.config.is_valid()?;
+
     let mut guard = state.handle.lock().unwrap();
     if guard.is_some() {
         return Err("Capture already running".to_string());
     }
 
-    let handle = start_mic_capture(app, api_key)?;
+    let handle = start_mic_capture(app, config.config.deepgram_api_key.clone())?;
     *guard = Some(handle);
     Ok(())
 }
@@ -262,8 +255,11 @@ fn stop_capture(state: State<CaptureState>) -> Result<(), String> {
 }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let config = Arc::new(AppConfig::load());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(ConfigState { config: config.clone() })
         .manage(CaptureState::default())
         .invoke_handler(tauri::generate_handler![
             extract_load_data,

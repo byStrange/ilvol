@@ -36,3 +36,6 @@ bytes = "1"
 http = "1"
 futures-util = "0.3"
 
+# .env file support
+dotenvy = "0.15"
+

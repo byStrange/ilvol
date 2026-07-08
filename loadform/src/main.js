@@ -28,31 +28,6 @@ let accumulatedTranscript = '';
 let currentExtractedData = null;
 let currentConfidence = {};
 
-// ─── API Key Persistence ──────────────────────────────────────────────────
-
-const STORAGE_KEYS = {
-  DEEPGRAM: 'loadform_deepgram_key',
-  OLLAMA_URL: 'loadform_ollama_url',
-  OLLAMA_MODEL: 'loadform_ollama_model',
-  OLLAMA_KEY: 'loadform_ollama_key',
-};
-
-function loadStoredKeys() {
-  const dg = localStorage.getItem(STORAGE_KEYS.DEEPGRAM);
-  const url = localStorage.getItem(STORAGE_KEYS.OLLAMA_URL);
-  const model = localStorage.getItem(STORAGE_KEYS.OLLAMA_MODEL);
-  const ok = localStorage.getItem(STORAGE_KEYS.OLLAMA_KEY);
-
-  if (dg) els.deepgramKey.value = dg;
-  if (url) els.ollamaUrl.value = url;
-  if (model) els.ollamaModel.value = model;
-  if (ok) els.ollamaKey.value = ok;
-}
-
-function saveKey(key, value) {
-  localStorage.setItem(key, value);
-}
-
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
 const els = {
@@ -63,7 +38,6 @@ const els = {
   transcriptArea: document.getElementById('transcript-area'),
   liveTranscript: document.getElementById('live-transcript'),
   interimTranscript: document.getElementById('interim-transcript'),
-  deepgramKey: document.getElementById('deepgram-key'),
   extractSection: document.getElementById('extract-section'),
   extractBtn: document.getElementById('extract-btn'),
   extractionSpinner: document.getElementById('extraction-spinner'),
@@ -74,9 +48,6 @@ const els = {
   copyBtn: document.getElementById('copy-btn'),
   copyFeedback: document.getElementById('copy-feedback'),
   newLoadBtn: document.getElementById('new-load-btn'),
-  ollamaUrl: document.getElementById('ollama-url'),
-  ollamaModel: document.getElementById('ollama-model'),
-  ollamaKey: document.getElementById('ollama-key'),
 };
 
 // ─── Field Definitions ────────────────────────────────────────────────────
@@ -104,16 +75,6 @@ async function toggleCapture() {
 }
 
 async function startCapture() {
-  const apiKey = els.deepgramKey.value.trim();
-  if (!apiKey) {
-    alert('Please enter your Deepgram API key first.');
-    els.deepgramKey.focus();
-    return;
-  }
-
-  // Persist key
-  saveKey(STORAGE_KEYS.DEEPGRAM, apiKey);
-
   accumulatedTranscript = '';
   els.liveTranscript.textContent = '';
   els.interimTranscript.textContent = '';
@@ -123,7 +84,7 @@ async function startCapture() {
   els.outputSection.classList.add('hidden');
 
   try {
-    await tauriInvoke('start_capture', { apiKey });
+    await tauriInvoke('start_capture');
     isCapturing = true;
     setCapturingUI(true);
   } catch (err) {
@@ -193,23 +154,11 @@ async function handleExtract() {
     return;
   }
 
-  const apiKey = els.ollamaKey.value.trim();
-  const baseUrl = els.ollamaUrl.value.trim();
-  const model = els.ollamaModel.value.trim();
-
-  // Persist keys
-  if (apiKey) saveKey(STORAGE_KEYS.OLLAMA_KEY, apiKey);
-  if (baseUrl) saveKey(STORAGE_KEYS.OLLAMA_URL, baseUrl);
-  if (model) saveKey(STORAGE_KEYS.OLLAMA_MODEL, model);
-
   setExtractingUI(true);
 
   try {
     const result = await tauriInvoke('extract_load_data', {
       transcript: accumulatedTranscript,
-      apiKey,
-      baseUrl,
-      model,
     });
 
     currentExtractedData = result.data;
@@ -349,8 +298,6 @@ function resetForm() {
 // ─── Event Listeners ────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
-  loadStoredKeys();
-
   els.startCaptureBtn.addEventListener('click', toggleCapture);
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
