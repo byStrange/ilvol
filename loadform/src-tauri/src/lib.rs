@@ -131,6 +131,85 @@ Transcript:
             .await
             .map_err(|e| format!("Local Ollama generation failed: {}", e))?;
         response.response
+    } else if config.config.is_gemini() {
+        // Google Gemini API — native format, not OpenAI-compatible
+        #[derive(Debug, Serialize)]
+        struct GeminiPart {
+            text: String,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct GeminiContent {
+            role: String,
+            parts: Vec<GeminiPart>,
+        }
+
+        #[derive(Debug, Serialize)]
+        struct GeminiRequest {
+            contents: Vec<GeminiContent>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GeminiResponse {
+            candidates: Vec<GeminiCandidate>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GeminiCandidate {
+            content: GeminiCandidateContent,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GeminiCandidateContent {
+            parts: Vec<GeminiPartResponse>,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct GeminiPartResponse {
+            text: String,
+        }
+
+        let api_req = GeminiRequest {
+            contents: vec![GeminiContent {
+                role: "user".to_string(),
+                parts: vec![GeminiPart { text: prompt }],
+            }],
+        };
+
+        let client = reqwest::Client::new();
+        let url = format!(
+            "{}/v1beta/models/{}:generateContent?key={}",
+            base_url.trim_end_matches('/'),
+            model,
+            api_key
+        );
+
+        let response = client
+            .post(&url)
+            .json(&api_req)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {}", e))?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+        if !status.is_success() {
+            return Err(format!("Gemini API error {}: {}", status, body_text));
+        }
+
+        let api_response: GeminiResponse = serde_json::from_str(&body_text)
+            .map_err(|e| format!("Failed to parse Gemini response: {}. Body: {}", e, body_text))?;
+
+        api_response
+            .candidates
+            .get(0)
+            .and_then(|c| c.content.parts.get(0))
+            .map(|p| p.text.clone())
+            .unwrap_or_default()
     } else {
         // Remote / cloud — OpenAI-compatible API via raw reqwest
         // Many services (OpenRouter, Together AI, etc.) expose /v1/chat/completions
