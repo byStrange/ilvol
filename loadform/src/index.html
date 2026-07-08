@@ -43,6 +43,82 @@
     </style>
   </head>
   <body class="min-h-screen bg-slate-900 text-slate-200 antialiased">
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center">
+      <div class="bg-slate-850 border border-slate-700 rounded-xl p-8 w-full max-w-sm shadow-2xl">
+        <h2 id="auth-title" class="text-xl font-bold text-white mb-6 text-center">Sign In</h2>
+        
+        <form id="auth-form" class="space-y-4">
+          <div>
+            <label class="block text-sm text-slate-400 mb-1.5">Email</label>
+            <input
+              id="auth-email"
+              type="email"
+              required
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              placeholder="you@example.com"
+            />
+          </div>
+          
+          <div>
+            <label class="block text-sm text-slate-400 mb-1.5">Password</label>
+            <input
+              id="auth-password"
+              type="password"
+              required
+              minlength="6"
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              placeholder="••••••••"
+            />
+          </div>
+          
+          <p id="auth-error" class="text-sm text-red-400 hidden"></p>
+          
+          <button
+            id="auth-submit-btn"
+            type="submit"
+            class="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded-xl transition-all text-base"
+          >
+            Sign In
+          </button>
+        </form>
+        
+        <p class="text-center text-sm text-slate-400 mt-4">
+          <span id="auth-toggle-text">Don't have an account?</span>
+          <button id="auth-toggle-btn" type="button" class="text-emerald-400 hover:text-emerald-300 font-medium ml-1">
+            Sign Up
+          </button>
+        </p>
+      </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="fixed inset-0 z-40 bg-slate-950/80 flex items-center justify-center hidden">
+      <div class="bg-slate-850 border border-slate-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
+        <h2 class="text-lg font-bold text-white mb-4">Settings</h2>
+        
+        <div class="mb-4">
+          <label class="block text-xs text-slate-500 mb-1">Logged in as</label>
+          <p id="settings-user-email" class="text-sm text-slate-300 truncate"></p>
+        </div>
+        
+        <div class="flex gap-3">
+          <button
+            id="settings-close-btn"
+            class="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-lg transition-colors"
+          >
+            Close
+          </button>
+          <button
+            id="logout-btn"
+            class="flex-1 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-medium rounded-lg transition-colors border border-red-500/30"
+          >
+            Logout
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="app" class="max-w-3xl mx-auto px-4 py-6">
       <!-- Header -->
       <header class="flex items-center justify-between mb-8">
