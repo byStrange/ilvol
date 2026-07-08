@@ -15,7 +15,8 @@
       {
         "title": "LoadForm",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "additionalBrowserArgs": "--use-fake-ui-for-media-stream --auto-accept-camera-and-microphone-capture"
       }
     ],
     "security": {
