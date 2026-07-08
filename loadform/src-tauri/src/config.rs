@@ -32,11 +32,6 @@ impl AppConfig {
         self.ollama_base_url.contains("127.0.0.1")
     }
 
-    pub fn is_gemini(&self) -> bool {
-        self.ollama_model.starts_with("gemini") ||
-        self.ollama_base_url.contains("googleapis")
-    }
-
     pub fn is_valid(&self) -> Result<(), String> {
         if self.deepgram_api_key.is_empty() {
             return Err(

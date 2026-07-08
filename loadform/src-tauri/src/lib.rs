@@ -66,6 +66,20 @@ pub struct ExtractionRequest {
     pub transcript: String,
 }
 
+// ─── Ollama Native API Types ────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct OllamaGenerateRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaGenerateResponse {
+    response: String,
+}
+
 // ─── LLM Extraction ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -123,7 +137,7 @@ Transcript:
     );
 
     let raw_content = if is_local {
-        // Local Ollama — native ollama-rs, no API key needed
+        // Local Ollama — native ollama-rs
         let ollama = Ollama::default();
         let request = GenerationRequest::new(model, prompt);
         let response: GenerationResponse = ollama
@@ -131,122 +145,16 @@ Transcript:
             .await
             .map_err(|e| format!("Local Ollama generation failed: {}", e))?;
         response.response
-    } else if config.config.is_gemini() {
-        // Google Gemini API — native format, not OpenAI-compatible
-        #[derive(Debug, Serialize)]
-        struct GeminiPart {
-            text: String,
-        }
-
-        #[derive(Debug, Serialize)]
-        struct GeminiContent {
-            role: String,
-            parts: Vec<GeminiPart>,
-        }
-
-        #[derive(Debug, Serialize)]
-        struct GeminiRequest {
-            contents: Vec<GeminiContent>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct GeminiResponse {
-            candidates: Vec<GeminiCandidate>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct GeminiCandidate {
-            content: GeminiCandidateContent,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct GeminiCandidateContent {
-            parts: Vec<GeminiPartResponse>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct GeminiPartResponse {
-            text: String,
-        }
-
-        let api_req = GeminiRequest {
-            contents: vec![GeminiContent {
-                role: "user".to_string(),
-                parts: vec![GeminiPart { text: prompt }],
-            }],
-        };
-
-        let client = reqwest::Client::new();
-        let url = format!(
-            "{}/v1beta/models/{}:generateContent?key={}",
-            base_url.trim_end_matches('/'),
-            model,
-            api_key
-        );
-
-        let response = client
-            .post(&url)
-            .json(&api_req)
-            .send()
-            .await
-            .map_err(|e| format!("HTTP error: {}", e))?;
-
-        let status = response.status();
-        let body_text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response body: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!("Gemini API error {}: {}", status, body_text));
-        }
-
-        let api_response: GeminiResponse = serde_json::from_str(&body_text)
-            .map_err(|e| format!("Failed to parse Gemini response: {}. Body: {}", e, body_text))?;
-
-        api_response
-            .candidates
-            .get(0)
-            .and_then(|c| c.content.parts.get(0))
-            .map(|p| p.text.clone())
-            .unwrap_or_default()
     } else {
-        // Remote / cloud — OpenAI-compatible API via raw reqwest
-        // Many services (OpenRouter, Together AI, etc.) expose /v1/chat/completions
-        #[derive(Debug, Serialize, Deserialize)]
-        struct ChatMessage {
-            role: String,
-            content: String,
-        }
-
-        #[derive(Debug, Serialize)]
-        struct ChatCompletionRequest {
-            model: String,
-            messages: Vec<ChatMessage>,
-            temperature: f64,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct ChatCompletionResponse {
-            choices: Vec<ChatCompletionChoice>,
-        }
-
-        #[derive(Debug, Deserialize)]
-        struct ChatCompletionChoice {
-            message: ChatMessage,
-        }
-
-        let api_req = ChatCompletionRequest {
+        // Remote Ollama — native /api/generate with auth
+        let api_req = OllamaGenerateRequest {
             model,
-            messages: vec![ChatMessage {
-                role: "system".to_string(),
-                content: prompt,
-            }],
-            temperature: 0.1,
+            prompt,
+            stream: false,
         };
 
         let client = reqwest::Client::new();
-        let url = format!("{}/v1/chat/completions", base_url);
+        let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
 
         let mut builder = client.post(&url).json(&api_req);
         if !api_key.is_empty() {
@@ -261,17 +169,13 @@ Transcript:
             .map_err(|e| format!("Failed to read response body: {}", e))?;
 
         if !status.is_success() {
-            return Err(format!("API error {}: {}", status, body_text));
+            return Err(format!("Ollama API error {}: {}", status, body_text));
         }
 
-        let api_response: ChatCompletionResponse = serde_json::from_str(&body_text)
-            .map_err(|e| format!("Failed to parse API response: {}. Body: {}", e, body_text))?;
+        let api_response: OllamaGenerateResponse = serde_json::from_str(&body_text)
+            .map_err(|e| format!("Failed to parse Ollama response: {}. Body: {}", e, body_text))?;
 
-        api_response
-            .choices
-            .get(0)
-            .map(|c| c.message.content.clone())
-            .unwrap_or_default()
+        api_response.response
     };
 
     // The LLM response may contain markdown code blocks — strip them
