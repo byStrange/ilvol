@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-/// Application configuration loaded from .env file.
-/// Users never see or enter these — they're compiled/shipped with the app.
+/// Application configuration with runtime-mutable API keys.
+/// Keys are fetched from Supabase at runtime, not from .env files.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub deepgram_api_key: String,
@@ -11,10 +11,20 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn load() -> Self {
-        // Load .env from the same directory as the executable
-        let _ = dotenvy::dotenv();
+    /// Creates a new config with empty API keys.
+    /// Use this when keys will be set at runtime via `set_keys`.
+    pub fn new_empty() -> Self {
+        Self {
+            deepgram_api_key: String::new(),
+            ollama_base_url: "http://localhost:11434".to_string(),
+            ollama_api_key: String::new(),
+            ollama_model: "llama3.1".to_string(),
+        }
+    }
 
+    /// Loads config from environment (legacy method, .env no longer required).
+    pub fn load() -> Self {
+        // Note: dotenvy removed — keys now fetched from Supabase at runtime
         Self {
             deepgram_api_key: std::env::var("DEEPGRAM_API_KEY")
                 .unwrap_or_default(),
@@ -25,6 +35,12 @@ impl AppConfig {
             ollama_model: std::env::var("OLLAMA_MODEL")
                 .unwrap_or_else(|_| "llama3.1".to_string()),
         }
+    }
+
+    /// Sets the API keys at runtime. Used by `set_api_keys` command.
+    pub fn set_keys(&mut self, deepgram: String, ollama: String) {
+        self.deepgram_api_key = deepgram;
+        self.ollama_api_key = ollama;
     }
 
     pub fn is_local_ollama(&self) -> bool {
@@ -46,7 +62,15 @@ impl AppConfig {
     }
 }
 
-// Tauri-managed state wrapper
+// Tauri-managed state wrapper with interior mutability for runtime key updates
 pub struct ConfigState {
-    pub config: Arc<AppConfig>,
+    pub config: Arc<Mutex<AppConfig>>,
+}
+
+impl Default for ConfigState {
+    fn default() -> Self {
+        Self {
+            config: Arc::new(Mutex::new(AppConfig::new_empty())),
+        }
+    }
 }

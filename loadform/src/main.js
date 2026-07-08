@@ -13,6 +13,13 @@ import {
   getConfidenceBadgeColor,
   needsReview,
 } from './templates.js';
+import { createClient } from '@supabase/supabase-js';
+
+// ─── Supabase Config ───────────────────────────────────────────────────────
+const SUPABASE_URL = 'http://127.0.0.1:54321';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
 function tauriInvoke(cmd, args = {}) {
@@ -30,6 +37,11 @@ let currentExtractedData = null;
 let currentConfidence = {};
 let devices = [];
 let selectedDeviceId = '';
+
+// ─── Auth State ─────────────────────────────────────────────────────────────
+
+let authMode = 'signin'; // 'signin' | 'signup'
+let currentUser = null;
 
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
@@ -55,6 +67,21 @@ const els = {
   copyBtn: document.getElementById('copy-btn'),
   copyFeedback: document.getElementById('copy-feedback'),
   newLoadBtn: document.getElementById('new-load-btn'),
+  // Auth elements
+  authModal: document.getElementById('auth-modal'),
+  authForm: document.getElementById('auth-form'),
+  authEmail: document.getElementById('auth-email'),
+  authPassword: document.getElementById('auth-password'),
+  authSubmitBtn: document.getElementById('auth-submit-btn'),
+  authTitle: document.getElementById('auth-title'),
+  authToggleBtn: document.getElementById('auth-toggle-btn'),
+  authToggleText: document.getElementById('auth-toggle-text'),
+  authError: document.getElementById('auth-error'),
+  settingsBtn: document.getElementById('settings-btn'),
+  settingsModal: document.getElementById('settings-modal'),
+  settingsUserEmail: document.getElementById('settings-user-email'),
+  settingsCloseBtn: document.getElementById('settings-close-btn'),
+  logoutBtn: document.getElementById('logout-btn'),
 };
 
 // ─── Field Definitions ────────────────────────────────────────────────────
@@ -392,15 +419,192 @@ function resetForm() {
   setCapturingUI(false);
 }
 
+// ─── Auth Flow ───────────────────────────────────────────────────────────────
+
+function initAuth() {
+  // Check for existing session
+  const token = localStorage.getItem('sb-auth-token');
+  if (token) {
+    // Try to restore session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) {
+        currentUser = session.user;
+        hideAuthModal();
+        fetchAndSetApiKeys();
+      } else {
+        // Token invalid/expired
+        localStorage.removeItem('sb-auth-token');
+        showAuthModal();
+      }
+    });
+  } else {
+    showAuthModal();
+  }
+}
+
+function showAuthModal() {
+  els.authModal.classList.remove('hidden');
+  els.authModal.classList.add('flex');
+}
+
+function hideAuthModal() {
+  els.authModal.classList.add('hidden');
+  els.authModal.classList.remove('flex');
+}
+
+function showSettingsModal() {
+  if (!currentUser) return;
+  els.settingsUserEmail.textContent = currentUser.email || 'Unknown';
+  els.settingsModal.classList.remove('hidden');
+}
+
+function hideSettingsModal() {
+  els.settingsModal.classList.add('hidden');
+}
+
+function toggleAuthMode() {
+  authMode = authMode === 'signin' ? 'signup' : 'signin';
+  updateAuthUI();
+}
+
+function updateAuthUI() {
+  if (authMode === 'signin') {
+    els.authTitle.textContent = 'Sign In';
+    els.authSubmitBtn.textContent = 'Sign In';
+    els.authToggleText.textContent = "Don't have an account?";
+    els.authToggleBtn.textContent = 'Sign Up';
+  } else {
+    els.authTitle.textContent = 'Sign Up';
+    els.authSubmitBtn.textContent = 'Sign Up';
+    els.authToggleText.textContent = 'Already have an account?';
+    els.authToggleBtn.textContent = 'Sign In';
+  }
+  els.authError.classList.add('hidden');
+}
+
+function showAuthError(message) {
+  els.authError.textContent = message;
+  els.authError.classList.remove('hidden');
+}
+
+async function handleAuthSubmit(e) {
+  e.preventDefault();
+  const email = els.authEmail.value.trim();
+  const password = els.authPassword.value;
+
+  if (!email || !password) {
+    showAuthError('Please enter email and password');
+    return;
+  }
+
+  if (password.length < 6) {
+    showAuthError('Password must be at least 6 characters');
+    return;
+  }
+
+  els.authSubmitBtn.disabled = true;
+  els.authSubmitBtn.textContent = authMode === 'signin' ? 'Signing In...' : 'Signing Up...';
+  els.authError.classList.add('hidden');
+
+  try {
+    let result;
+    if (authMode === 'signin') {
+      result = await supabase.auth.signInWithPassword({ email, password });
+    } else {
+      result = await supabase.auth.signUp({ email, password });
+    }
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    const session = result.data.session;
+    if (session) {
+      localStorage.setItem('sb-auth-token', session.access_token);
+      currentUser = session.user;
+      await fetchAndSetApiKeys();
+      hideAuthModal();
+      els.authForm.reset();
+    } else {
+      // Sign up successful but needs email confirmation (if enabled)
+      showAuthError('Check your email to confirm your account');
+    }
+  } catch (err) {
+    console.error('Auth error:', err);
+    showAuthError(err.message || 'Authentication failed');
+  } finally {
+    els.authSubmitBtn.disabled = false;
+    updateAuthUI();
+  }
+}
+
+async function fetchAndSetApiKeys() {
+  try {
+    const { data, error } = await supabase.from('api_keys').select('*');
+    if (error) {
+      console.error('Failed to fetch API keys:', error);
+      return;
+    }
+
+    const keys = { deepgram: '', ollama: '' };
+    for (const row of data) {
+      if (row.provider === 'deepgram') keys.deepgram = row.key_value;
+      if (row.provider === 'ollama') keys.ollama = row.key_value;
+    }
+
+    // Push keys to Rust
+    await tauriInvoke('set_api_keys', {
+      deepgram_key: keys.deepgram,
+      ollama_key: keys.ollama,
+    });
+    console.log('API keys pushed to Rust backend');
+  } catch (err) {
+    console.error('Failed to set API keys in Rust:', err);
+  }
+}
+
+async function handleLogout() {
+  try {
+    await supabase.auth.signOut();
+  } catch (err) {
+    console.error('Sign out error:', err);
+  }
+  localStorage.removeItem('sb-auth-token');
+  currentUser = null;
+  hideSettingsModal();
+  showAuthModal();
+  try {
+    await tauriInvoke('logout');
+  } catch (err) {
+    console.error('Logout command error:', err);
+  }
+}
+
 // ─── Event Listeners ────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
+  initAuth();
+
   loadDevices();
 
   els.startCaptureBtn.addEventListener('click', toggleCapture);
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
   els.newLoadBtn.addEventListener('click', resetForm);
+
+  // Auth event listeners
+  els.authForm.addEventListener('submit', handleAuthSubmit);
+  els.authToggleBtn.addEventListener('click', toggleAuthMode);
+  els.settingsBtn.addEventListener('click', showSettingsModal);
+  els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
+  els.logoutBtn.addEventListener('click', handleLogout);
+
+  // Close settings modal on backdrop click
+  els.settingsModal.addEventListener('click', (e) => {
+    if (e.target === els.settingsModal) {
+      hideSettingsModal();
+    }
+  });
 
   if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.event) {
     window.__TAURI__.event.listen('transcript:chunk', (event) => {

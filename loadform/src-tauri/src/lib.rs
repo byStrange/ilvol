@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{AppHandle, State};
 
 mod audio_capture;
 mod config;
 
 use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
-use config::{AppConfig, ConfigState};
+use config::ConfigState;
 
 use ollama_rs::{
     generation::completion::{request::GenerationRequest, GenerationResponse},
@@ -87,10 +87,15 @@ async fn extract_load_data(
     config: State<'_, ConfigState>,
     req: ExtractionRequest,
 ) -> Result<LoadFormDataWithConfidence, String> {
-    let base_url = config.config.ollama_base_url.clone();
-    let model = config.config.ollama_model.clone();
-    let api_key = config.config.ollama_api_key.clone();
-    let is_local = config.config.is_local_ollama();
+    let (base_url, model, api_key, is_local) = {
+        let cfg = config.config.lock().unwrap();
+        (
+            cfg.ollama_base_url.clone(),
+            cfg.ollama_model.clone(),
+            cfg.ollama_api_key.clone(),
+            cfg.is_local_ollama(),
+        )
+    };
 
     let prompt = format!(
         r#"You are a logistics data extraction assistant. Given a broker conversation transcript, extract the following fields:
@@ -231,7 +236,7 @@ fn start_capture_cmd(
     device_id: String,
     mix_system_audio: bool,
 ) -> Result<(), String> {
-    config.config.is_valid()?;
+    config.config.lock().unwrap().is_valid()?;
 
     let mut guard = state.handle.lock().unwrap();
     if guard.is_some() {
@@ -245,7 +250,7 @@ fn start_capture_cmd(
 
     let handle = start_capture(
         app,
-        config.config.deepgram_api_key.clone(),
+        config.config.lock().unwrap().deepgram_api_key.clone(),
         options,
     )?;
     *guard = Some(handle);
@@ -263,13 +268,30 @@ fn stop_capture(state: State<'_, CaptureState>) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+fn set_api_keys(
+    state: State<'_, ConfigState>,
+    deepgram_key: String,
+    ollama_key: String,
+) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap();
+    cfg.set_keys(deepgram_key, ollama_key);
+    Ok(())
+}
+
+#[tauri::command]
+fn logout(state: State<'_, ConfigState>) -> Result<(), String> {
+    let mut cfg = state.config.lock().unwrap();
+    cfg.deepgram_api_key.clear();
+    cfg.ollama_api_key.clear();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let config = Arc::new(AppConfig::load());
-
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(ConfigState { config: config.clone() })
+        .manage(ConfigState::default())
         .manage(CaptureState::default())
         .invoke_handler(tauri::generate_handler![
             extract_load_data,
@@ -277,6 +299,8 @@ pub fn run() {
             list_devices,
             start_capture_cmd,
             stop_capture,
+            set_api_keys,
+            logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -12,6 +12,9 @@
     "test:rs": "cd src-tauri && cargo test",
     "test": "npm run test:js && npm run test:rs"
   },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.0"
+  },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
     "vite": "^5"
