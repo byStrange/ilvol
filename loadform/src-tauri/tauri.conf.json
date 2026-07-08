@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.loadform.app",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
   },
   "app": {
     "withGlobalTauri": true,

@@ -5,11 +5,15 @@
   "type": "module",
   "scripts": {
     "tauri": "tauri",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "test:js": "node --experimental-vm-modules src/templates.test.js && node --experimental-vm-modules src/transcription.test.js",
     "test:rs": "cd src-tauri && cargo test",
     "test": "npm run test:js && npm run test:rs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "vite": "^5"
   }
 }

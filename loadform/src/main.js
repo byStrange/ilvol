@@ -9,7 +9,7 @@
  * 5. Copy to clipboard
  */
 
-import { startTranscription, stopTranscription } from './transcription.js';
+import { startTranscription } from './transcription.js';
 import {
   DEFAULT_TEMPLATE,
   renderTemplate,
