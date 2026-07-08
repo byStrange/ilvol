@@ -554,8 +554,10 @@ async function fetchAndSetApiKeys() {
     }
 
     await tauriInvoke('set_api_keys', {
-      deepgram_key: keys.deepgram,
-      ollama_key: keys.ollama,
+      payload: {
+        deepgram_key: keys.deepgram,
+        ollama_key: keys.ollama,
+      },
     });
     console.log('API keys pushed to Rust backend');
   } catch (err) {
