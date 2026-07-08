@@ -4,13 +4,16 @@
   "version": "0.1.0",
   "identifier": "com.loadform.app",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "loadform",
+        "title": "LoadForm",
         "width": 800,
         "height": 600
       }
