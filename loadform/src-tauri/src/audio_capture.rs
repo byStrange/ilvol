@@ -355,7 +355,7 @@ async fn capture_system_audio_windows(
         .get_audiocaptureclient()
         .map_err(|e| format!("Failed to get capture client: {:?}", e))?;
 
-    let blockalign = wavefmt.get_blockalign();
+    let blockalign = wavefmt.get_blockalign() as usize;
 
     audio_client
         .start_stream()
