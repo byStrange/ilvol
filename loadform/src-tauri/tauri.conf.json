@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "loadform",
+        "title": "LoadForm",
         "width": 800,
         "height": 600
       }

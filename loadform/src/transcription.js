@@ -42,14 +42,31 @@ export async function startTranscription(apiKey, onChunk) {
   let pendingWords = [];
 
   // Get microphone permission
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      sampleRate: SAMPLE_RATE,
-      channelCount: CHANNELS,
-      echoCancellation: true,
-      noiseSuppression: true,
-    },
-  });
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        sampleRate: SAMPLE_RATE,
+        channelCount: CHANNELS,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+  } catch (permErr) {
+    if (permErr.name === 'NotAllowedError') {
+      throw new Error(
+        'Microphone access was denied. Please allow microphone access for this app:\n\n' +
+        'Windows: Settings → Privacy → Microphone → Allow apps to access your microphone\n' +
+        'macOS: System Settings → Privacy & Security → Microphone → Enable for this app\n' +
+        'Linux: Check your browser/media permissions.'
+      );
+    }
+    if (permErr.name === 'NotFoundError') {
+      throw new Error(
+        'No microphone found. Please connect a microphone and try again.'
+      );
+    }
+    throw permErr;
+  }
 
   audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
 
