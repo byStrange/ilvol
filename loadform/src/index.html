@@ -69,22 +69,29 @@
         <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
           <h2 class="text-lg font-semibold mb-4 text-white">🎙️ Audio Capture</h2>
 
-          <!-- Mode Selector -->
-          <div class="flex gap-2 mb-4">
-            <button
-              id="mode-mic"
-              class="flex-1 py-2 px-3 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 text-sm font-medium transition-all"
+          <!-- Device Selector -->
+          <div class="mb-4">
+            <label class="block text-xs text-slate-400 mb-1.5">Audio Source</label>
+            <select
+              id="device-select"
+              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors"
             >
-              🎤 Mic Input (Free)
-            </button>
-            <button
-              id="mode-system"
-              disabled
-              class="flex-1 py-2 px-3 rounded-lg bg-slate-700/50 text-slate-500 border border-slate-600 text-sm font-medium cursor-not-allowed"
-              title="Available in Pro plan"
-            >
-              🔊 System Audio (PRO)
-            </button>
+              <option value="" disabled selected>Loading devices...</option>
+            </select>
+            <p id="device-hint" class="text-xs text-slate-500 mt-1 hidden"></p>
+          </div>
+
+          <!-- Mix System Audio (Pro feature) -->
+          <div id="mix-system-row" class="mb-4 hidden">
+            <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
+              <input
+                id="mix-system-checkbox"
+                type="checkbox"
+                class="w-4 h-4 rounded border-slate-600 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
+              />
+              <span>Mix System Audio (both mic + system)</span>
+              <span class="text-xs bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">PRO</span>
+            </label>
           </div>
 
           <!-- Capture Controls -->

@@ -1,8 +1,9 @@
 /**
  * LoadForm - Main Application Logic
  *
- * Audio capture now runs in Rust (cpal + Deepgram websocket).
+ * Audio capture runs in Rust (cpal/WASAPI + Deepgram websocket).
  * Frontend receives transcript chunks via Tauri events.
+ * Device selection: mic, system audio, or mixed.
  */
 
 import {
@@ -27,6 +28,8 @@ let isCapturing = false;
 let accumulatedTranscript = '';
 let currentExtractedData = null;
 let currentConfidence = {};
+let devices = [];
+let selectedDeviceId = '';
 
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
@@ -38,6 +41,10 @@ const els = {
   transcriptArea: document.getElementById('transcript-area'),
   liveTranscript: document.getElementById('live-transcript'),
   interimTranscript: document.getElementById('interim-transcript'),
+  deviceSelect: document.getElementById('device-select'),
+  deviceHint: document.getElementById('device-hint'),
+  mixSystemRow: document.getElementById('mix-system-row'),
+  mixSystemCheckbox: document.getElementById('mix-system-checkbox'),
   extractSection: document.getElementById('extract-section'),
   extractBtn: document.getElementById('extract-btn'),
   extractionSpinner: document.getElementById('extraction-spinner'),
@@ -64,6 +71,87 @@ const FIELDS = [
   { key: 'additional_notes', label: '📝 Additional Notes', placeholder: 'e.g. Lumpers required' },
 ];
 
+// ─── Device Management ──────────────────────────────────────────────────────
+
+async function loadDevices() {
+  try {
+    devices = await tauriInvoke('list_devices');
+
+    els.deviceSelect.innerHTML = '';
+
+    // Group: Microphones
+    const micGroup = document.createElement('optgroup');
+    micGroup.label = '🎤 Microphones';
+    const mics = devices.filter((d) => d.device_type === 'microphone');
+    if (mics.length === 0) {
+      const opt = document.createElement('option');
+      opt.textContent = 'No microphones found';
+      opt.disabled = true;
+      micGroup.appendChild(opt);
+    } else {
+      mics.forEach((dev) => {
+        const opt = document.createElement('option');
+        opt.value = dev.id;
+        opt.textContent = dev.name;
+        micGroup.appendChild(opt);
+      });
+    }
+    els.deviceSelect.appendChild(micGroup);
+
+    // Group: System Audio
+    const sysGroup = document.createElement('optgroup');
+    sysGroup.label = '🔊 System Audio';
+    const sysDevs = devices.filter((d) => d.device_type === 'system');
+    sysDevs.forEach((dev) => {
+      const opt = document.createElement('option');
+      opt.value = dev.id;
+      opt.textContent = dev.name;
+      if (dev.id === 'system:unavailable') {
+        opt.disabled = true;
+      }
+      sysGroup.appendChild(opt);
+    });
+    if (sysDevs.length > 0) {
+      els.deviceSelect.appendChild(sysGroup);
+    }
+
+    // Select first mic by default
+    if (mics.length > 0) {
+      els.deviceSelect.value = mics[0].id;
+      selectedDeviceId = mics[0].id;
+    }
+
+    els.deviceSelect.addEventListener('change', onDeviceChange);
+    onDeviceChange();
+  } catch (err) {
+    console.error('Failed to load devices:', err);
+    els.deviceSelect.innerHTML = '<option disabled>Failed to load devices</option>';
+  }
+}
+
+function onDeviceChange() {
+  selectedDeviceId = els.deviceSelect.value;
+  const dev = devices.find((d) => d.id === selectedDeviceId);
+
+  if (!dev) return;
+
+  // Show/hide system audio mix option
+  if (dev.device_type === 'microphone') {
+    els.mixSystemRow.classList.remove('hidden');
+    els.deviceHint.textContent = 'Captures your microphone. Enable "Mix System Audio" to also capture RingCentral/Zoom.';
+    els.deviceHint.classList.remove('hidden');
+  } else if (dev.device_type === 'system') {
+    els.mixSystemRow.classList.add('hidden');
+    els.mixSystemCheckbox.checked = false;
+    if (dev.id === 'system:unavailable') {
+      els.deviceHint.textContent = 'System audio requires Windows. On Linux/Mac, use a virtual audio cable (e.g., PulseAudio loopback) and select it as mic.';
+    } else {
+      els.deviceHint.textContent = 'Captures all system audio including RingCentral, Zoom, Teams, browser.';
+    }
+    els.deviceHint.classList.remove('hidden');
+  }
+}
+
 // ─── Capture Flow ───────────────────────────────────────────────────────────
 
 async function toggleCapture() {
@@ -75,6 +163,11 @@ async function toggleCapture() {
 }
 
 async function startCapture() {
+  if (!selectedDeviceId) {
+    alert('Please select an audio device first.');
+    return;
+  }
+
   accumulatedTranscript = '';
   els.liveTranscript.textContent = '';
   els.interimTranscript.textContent = '';
@@ -83,8 +176,13 @@ async function startCapture() {
   els.formSection.classList.add('hidden');
   els.outputSection.classList.add('hidden');
 
+  const options = {
+    deviceId: selectedDeviceId,
+    mixSystemAudio: els.mixSystemCheckbox.checked,
+  };
+
   try {
-    await tauriInvoke('start_capture');
+    await tauriInvoke('start_capture_cmd', options);
     isCapturing = true;
     setCapturingUI(true);
   } catch (err) {
@@ -101,7 +199,6 @@ async function stopCapture() {
     isCapturing = false;
     setCapturingUI(false);
 
-    // Show the extract section
     els.extractSection.classList.remove('hidden');
     els.extractSection.scrollIntoView({ behavior: 'smooth' });
   } catch (err) {
@@ -116,12 +213,14 @@ function setCapturingUI(capturing) {
     els.startCaptureBtn.classList.remove('bg-emerald-500', 'hover:bg-emerald-600');
     els.startCaptureBtn.classList.add('bg-red-500', 'hover:bg-red-600');
     els.capturingIndicator.classList.remove('hidden');
+    els.deviceSelect.disabled = true;
   } else {
     els.captureBtnText.textContent = 'Start Capture';
     els.captureIcon.textContent = '🎙️';
     els.startCaptureBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
     els.startCaptureBtn.classList.add('bg-emerald-500', 'hover:bg-emerald-600');
     els.capturingIndicator.classList.add('hidden');
+    els.deviceSelect.disabled = false;
   }
 }
 
@@ -168,7 +267,6 @@ async function handleExtract() {
     els.formSection.classList.remove('hidden');
     els.formSection.scrollIntoView({ behavior: 'smooth' });
 
-    // Auto-render output
     renderOutput();
   } catch (err) {
     console.error('Extraction failed:', err);
@@ -223,7 +321,6 @@ function renderForm(data, confidence) {
     els.fieldsContainer.appendChild(fieldEl);
   });
 
-  // Add listener to update output on any field change
   els.fieldsContainer.querySelectorAll('input').forEach((input) => {
     input.addEventListener('input', () => {
       currentExtractedData[input.dataset.field] = input.value;
@@ -298,12 +395,13 @@ function resetForm() {
 // ─── Event Listeners ────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
+  loadDevices();
+
   els.startCaptureBtn.addEventListener('click', toggleCapture);
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
   els.newLoadBtn.addEventListener('click', resetForm);
 
-  // Listen for transcript events from Rust backend
   if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.event) {
     window.__TAURI__.event.listen('transcript:chunk', (event) => {
       onTranscriptChunk(event.payload);

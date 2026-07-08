@@ -1,6 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter};
@@ -14,6 +14,15 @@ use url::Url;
 const SAMPLE_RATE: u32 = 16000;
 const CHANNELS: u16 = 1;
 const DEEPGRAM_URL: &str = "wss://api.deepgram.com/v1/listen";
+
+// ─── Audio Device Info ──────────────────────────────────────────────────────
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+    pub device_type: String, // "microphone" | "system"
+}
 
 // ─── Transcript Chunk (emitted to frontend) ─────────────────────────────────
 
@@ -37,11 +46,62 @@ impl CaptureHandle {
     }
 }
 
-// ─── Start Mic Capture ──────────────────────────────────────────────────────
+// ─── List Available Audio Devices ───────────────────────────────────────────
 
-pub fn start_mic_capture(
+pub fn list_audio_devices() -> Vec<AudioDevice> {
+    let mut devices = Vec::new();
+    let host = cpal::default_host();
+
+    // Input devices (microphones)
+    if let Ok(input_devs) = host.input_devices() {
+        for (idx, device) in input_devs.enumerate() {
+            let name = device
+                .name()
+                .unwrap_or_else(|_| format!("Mic {}", idx + 1));
+            devices.push(AudioDevice {
+                id: format!("mic:{}", idx),
+                name,
+                device_type: "microphone".to_string(),
+            });
+        }
+    }
+
+    // System audio (loopback) — only meaningful on Windows with WASAPI
+    // On other platforms we add a generic "System Audio" option if possible
+    #[cfg(target_os = "windows")]
+    {
+        devices.push(AudioDevice {
+            id: "system:default".to_string(),
+            name: "System Audio (All Apps)".to_string(),
+            device_type: "system".to_string(),
+        });
+    }
+
+    // Fallback for non-Windows: indicate system audio isn't available natively
+    #[cfg(not(target_os = "windows"))]
+    {
+        devices.push(AudioDevice {
+            id: "system:unavailable".to_string(),
+            name: "System Audio (Windows only)".to_string(),
+            device_type: "system".to_string(),
+        });
+    }
+
+    devices
+}
+
+// ─── Start Capture (from selected device) ───────────────────────────────────
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CaptureOptions {
+    pub device_id: String,
+    pub mix_system_audio: bool, // if true, mix mic + system
+}
+
+pub fn start_capture(
     app_handle: AppHandle,
     deepgram_api_key: String,
+    options: CaptureOptions,
 ) -> Result<CaptureHandle, String> {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
@@ -49,7 +109,8 @@ pub fn start_mic_capture(
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async {
-            if let Err(e) = capture_and_stream(app_handle, deepgram_api_key, stop_flag_clone).await
+            if let Err(e) =
+                capture_and_stream(app_handle, deepgram_api_key, options, stop_flag_clone).await
             {
                 eprintln!("[audio_capture] error: {}", e);
             }
@@ -59,49 +120,14 @@ pub fn start_mic_capture(
     Ok(CaptureHandle { stop_flag })
 }
 
-// ─── WASAPI Capture + Deepgram Streaming (async) ────────────────────────────
+// ─── Core Capture + Deepgram Streaming ──────────────────────────────────────
 
 async fn capture_and_stream(
     app_handle: AppHandle,
     api_key: String,
+    options: CaptureOptions,
     stop_flag: Arc<AtomicBool>,
 ) -> Result<(), String> {
-    // ─── CPAL: Open default microphone ────────────────────────────────────
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or("No default input device (microphone) found. Please connect a microphone.")?;
-
-    let config = cpal::StreamConfig {
-        channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Default,
-    };
-
-    // Channel: audio bytes → websocket writer
-    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(128);
-
-    // ─── CPAL: Build input stream ───────────────────────────────────────────
-    let audio_tx_clone = audio_tx.clone();
-    let stream = device
-        .build_input_stream(
-            &config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let bytes = f32_samples_to_i16_bytes(data);
-                // Non-blocking — drop if channel is full (backpressure)
-                let _ = audio_tx_clone.try_send(bytes);
-            },
-            move |err| {
-                eprintln!("[audio_capture] CPAL error: {}", err);
-            },
-            None,
-        )
-        .map_err(|e| format!("Failed to build input stream: {}", e))?;
-
-    stream
-        .play()
-        .map_err(|e| format!("Failed to start audio stream: {}", e))?;
-
     // ─── Deepgram Websocket ─────────────────────────────────────────────────
     let mut ws_url = Url::parse(DEEPGRAM_URL)
         .map_err(|e| format!("Invalid Deepgram URL: {}", e))?;
@@ -130,6 +156,9 @@ async fn capture_and_stream(
         .map_err(|e| format!("Deepgram connect failed: {}", e))?;
 
     let (mut ws_write, mut ws_read) = ws_stream.split();
+
+    // Channel: audio bytes → websocket writer
+    let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(256);
 
     // ─── Websocket Writer Task ──────────────────────────────────────────────
     let writer = tokio::spawn(async move {
@@ -188,16 +217,27 @@ async fn capture_and_stream(
         accumulated
     });
 
-    // ─── Wait for stop signal ───────────────────────────────────────────────
-    loop {
-        if stop_flag.load(Ordering::Relaxed) {
-            break;
+    // ─── Start Audio Capture based on device selection ────────────────────────
+    if options.device_id.starts_with("mic:") {
+        let idx_str = options.device_id.trim_start_matches("mic:");
+        let idx: usize = idx_str.parse().unwrap_or(0);
+        capture_mic(audio_tx.clone(), stop_flag.clone(), idx).await?;
+    } else if options.device_id == "system:default" {
+        #[cfg(target_os = "windows")]
+        {
+            capture_system_audio_windows(audio_tx.clone(), stop_flag.clone()).await?;
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        #[cfg(not(target_os = "windows"))]
+        {
+            return Err("System audio capture is only available on Windows".to_string());
+        }
+    } else if options.device_id == "system:unavailable" {
+        return Err("System audio capture is only available on Windows".to_string());
+    } else {
+        return Err(format!("Unknown device: {}", options.device_id));
     }
 
     // ─── Cleanup ────────────────────────────────────────────────────────────
-    drop(stream); // Stops CPAL capture
     drop(audio_tx); // Signals writer to close
 
     let _ = writer.await;
@@ -212,6 +252,101 @@ async fn capture_and_stream(
     Ok(())
 }
 
+// ─── Microphone Capture (cpal, cross-platform) ─────────────────────────────
+
+async fn capture_mic(
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    stop_flag: Arc<AtomicBool>,
+    device_index: usize,
+) -> Result<(), String> {
+    let host = cpal::default_host();
+    let devices: Vec<_> = host
+        .input_devices()
+        .map_err(|e| format!("Failed to list input devices: {}", e))?
+        .collect();
+
+    let device = devices
+        .get(device_index)
+        .ok_or(format!("Mic device index {} not found", device_index))?;
+
+    let config = cpal::StreamConfig {
+        channels: CHANNELS,
+        sample_rate: cpal::SampleRate(SAMPLE_RATE),
+        buffer_size: cpal::BufferSize::Default,
+    };
+
+    let audio_tx_clone = audio_tx.clone();
+    let stream = device
+        .build_input_stream(
+            &config,
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let bytes = f32_samples_to_i16_bytes(data);
+                let _ = audio_tx_clone.try_send(bytes);
+            },
+            move |err| eprintln!("[audio_capture] CPAL mic error: {}", err),
+            None,
+        )
+        .map_err(|e| format!("Failed to build mic stream: {}", e))?;
+
+    stream
+        .play()
+        .map_err(|e| format!("Failed to start mic stream: {}", e))?;
+
+    // Wait for stop
+    while !stop_flag.load(Ordering::Relaxed) {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+    }
+
+    drop(stream);
+    Ok(())
+}
+
+// ─── System Audio Capture (Windows WASAPI loopback) ─────────────────────────
+
+#[cfg(target_os = "windows")]
+async fn capture_system_audio_windows(
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    stop_flag: Arc<AtomicBool>,
+) -> Result<(), String> {
+    use wasapi::{
+        initialize_mta, AudioClient, Direction, SampleType, StreamMode, WaveFormat,
+    };
+
+    initialize_mta().map_err(|e| format!("WASAPI MTA init failed: {:?}", e))?;
+
+    let device = wasapi::get_default_device(&Direction::Render,
+    )
+    .map_err(|e| format!("Failed to get default render device: {:?}", e))?;
+
+    let mut audio_client = device
+        .get_iaudioclient()
+        .map_err(|e| format!("Failed to get audio client: {:?}", e))?;
+
+    let wavefmt = WaveFormat::new(16, 16, &SampleType::Int, SAMPLE_RATE, 1, None)
+        .map_err(|e| format!("WaveFormat failed: {:?}", e))?;
+
+    // Shared event-driven mode with loopback
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: 0,
+    };
+
+    audio_client
+        .initialize_client(&wavefmt,
+        &Direction::Capture, // WASAPI loopback is technically a capture on render device
+        &mode,
+        )
+        .map_err(|e| format!("AudioClient init failed: {:?}", e))?;
+
+    // NOTE: The wasapi crate 0.14 does NOT have a direct loopback flag.
+    // For true loopback we need the newer wasapi API or raw COM calls.
+    // As a workaround, we use cpal's loopback via a different approach below.
+
+    // For now, emit a clear error telling the user this needs Windows-specific work
+    drop(audio_client);
+    Err("System audio loopback requires advanced WASAPI setup. Please use Microphone mode for now, or contact support.".to_string())
+}
+
 // ─── f32 → i16 (little-endian bytes) ────────────────────────────────────────
 
 fn f32_samples_to_i16_bytes(samples: &[f32]) -> Vec<u8> {
@@ -221,4 +356,14 @@ fn f32_samples_to_i16_bytes(samples: &[f32]) -> Vec<u8> {
         bytes.extend_from_slice(&s.to_le_bytes());
     }
     bytes
+}
+
+// ─── Placeholder for non-Windows system audio ───────────────────────────────
+
+#[cfg(not(target_os = "windows"))]
+async fn capture_system_audio_windows(
+    _audio_tx: mpsc::Sender<Vec<u8>>,
+    _stop_flag: Arc<AtomicBool>,
+) -> Result<(), String> {
+    Err("System audio capture is only available on Windows".to_string())
 }

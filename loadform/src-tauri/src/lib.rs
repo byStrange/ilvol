@@ -6,7 +6,7 @@ use tauri::{AppHandle, State};
 mod audio_capture;
 mod config;
 
-use audio_capture::{start_mic_capture, CaptureHandle};
+use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
 use config::{AppConfig, ConfigState};
 
 // ─── Shared State ───────────────────────────────────────────────────────────
@@ -226,10 +226,16 @@ fn copy_to_clipboard(text: String) -> Result<(), String> {
 // ─── Tauri Entry ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn start_capture(
-    state: State<CaptureState>,
-    config: State<ConfigState>,
+fn list_devices() -> Vec<AudioDevice> {
+    list_audio_devices()
+}
+
+#[tauri::command]
+fn start_capture_cmd(
+    state: State<'_, CaptureState>,
+    config: State<'_, ConfigState>,
     app: AppHandle,
+    options: CaptureOptions,
 ) -> Result<(), String> {
     config.config.is_valid()?;
 
@@ -238,13 +244,17 @@ fn start_capture(
         return Err("Capture already running".to_string());
     }
 
-    let handle = start_mic_capture(app, config.config.deepgram_api_key.clone())?;
+    let handle = start_capture(
+        app,
+        config.config.deepgram_api_key.clone(),
+        options,
+    )?;
     *guard = Some(handle);
     Ok(())
 }
 
 #[tauri::command]
-fn stop_capture(state: State<CaptureState>) -> Result<(), String> {
+fn stop_capture(state: State<'_, CaptureState>) -> Result<(), String> {
     let mut guard = state.handle.lock().unwrap();
     if let Some(handle) = guard.take() {
         handle.stop();
@@ -253,6 +263,7 @@ fn stop_capture(state: State<CaptureState>) -> Result<(), String> {
         Err("No capture running".to_string())
     }
 }
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let config = Arc::new(AppConfig::load());
@@ -264,7 +275,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             extract_load_data,
             copy_to_clipboard,
-            start_capture,
+            list_devices,
+            start_capture_cmd,
             stop_capture,
         ])
         .run(tauri::generate_context!())
