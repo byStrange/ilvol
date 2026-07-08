@@ -35,6 +35,31 @@ let accumulatedTranscript = '';
 let currentExtractedData = null;
 let currentConfidence = {};
 
+// ─── API Key Persistence ──────────────────────────────────────────────────
+
+const STORAGE_KEYS = {
+  DEEPGRAM: 'loadform_deepgram_key',
+  OLLAMA_URL: 'loadform_ollama_url',
+  OLLAMA_MODEL: 'loadform_ollama_model',
+  OLLAMA_KEY: 'loadform_ollama_key',
+};
+
+function loadStoredKeys() {
+  const dg = localStorage.getItem(STORAGE_KEYS.DEEPGRAM);
+  const url = localStorage.getItem(STORAGE_KEYS.OLLAMA_URL);
+  const model = localStorage.getItem(STORAGE_KEYS.OLLAMA_MODEL);
+  const ok = localStorage.getItem(STORAGE_KEYS.OLLAMA_KEY);
+
+  if (dg) els.deepgramKey.value = dg;
+  if (url) els.ollamaUrl.value = url;
+  if (model) els.ollamaModel.value = model;
+  if (ok) els.ollamaKey.value = ok;
+}
+
+function saveKey(key, value) {
+  localStorage.setItem(key, value);
+}
+
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
 const els = {
@@ -92,6 +117,9 @@ async function startCapture() {
     els.deepgramKey.focus();
     return;
   }
+
+  // Persist key
+  saveKey(STORAGE_KEYS.DEEPGRAM, apiKey);
 
   accumulatedTranscript = '';
   els.liveTranscript.textContent = '';
@@ -170,6 +198,11 @@ async function handleExtract() {
   const apiKey = els.ollamaKey.value.trim();
   const baseUrl = els.ollamaUrl.value.trim();
   const model = els.ollamaModel.value.trim();
+
+  // Persist keys
+  if (apiKey) saveKey(STORAGE_KEYS.OLLAMA_KEY, apiKey);
+  if (baseUrl) saveKey(STORAGE_KEYS.OLLAMA_URL, baseUrl);
+  if (model) saveKey(STORAGE_KEYS.OLLAMA_MODEL, model);
 
   if (!apiKey) {
     // Allow without key for demo/testing, but warn
@@ -324,6 +357,8 @@ function resetForm() {
 // ─── Event Listeners ────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', () => {
+  loadStoredKeys();
+
   els.startCaptureBtn.addEventListener('click', toggleCapture);
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
