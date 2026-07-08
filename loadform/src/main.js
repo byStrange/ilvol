@@ -177,8 +177,8 @@ async function startCapture() {
   els.outputSection.classList.add('hidden');
 
   const options = {
-    device_id: selectedDeviceId,
-    mix_system_audio: els.mixSystemCheckbox.checked,
+    deviceId: selectedDeviceId,
+    mixSystemAudio: els.mixSystemCheckbox.checked,
   };
 
   try {
@@ -257,7 +257,7 @@ async function handleExtract() {
 
   try {
     const result = await tauriInvoke('extract_load_data', {
-      transcript: accumulatedTranscript,
+      req: { transcript: accumulatedTranscript }
     });
 
     currentExtractedData = result.data;
