@@ -39,4 +39,5 @@ futures-util = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.23"
+bytemuck = "1"
 
