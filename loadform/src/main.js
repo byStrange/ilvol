@@ -177,8 +177,8 @@ async function startCapture() {
   els.outputSection.classList.add('hidden');
 
   const options = {
-    deviceId: selectedDeviceId,
-    mixSystemAudio: els.mixSystemCheckbox.checked,
+    device_id: selectedDeviceId,
+    mix_system_audio: els.mixSystemCheckbox.checked,
   };
 
   try {

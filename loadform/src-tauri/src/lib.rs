@@ -235,7 +235,8 @@ fn start_capture_cmd(
     state: State<'_, CaptureState>,
     config: State<'_, ConfigState>,
     app: AppHandle,
-    options: CaptureOptions,
+    device_id: String,
+    mix_system_audio: bool,
 ) -> Result<(), String> {
     config.config.is_valid()?;
 
@@ -243,6 +244,11 @@ fn start_capture_cmd(
     if guard.is_some() {
         return Err("Capture already running".to_string());
     }
+
+    let options = CaptureOptions {
+        device_id,
+        mix_system_audio,
+    };
 
     let handle = start_capture(
         app,
