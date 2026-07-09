@@ -207,12 +207,14 @@ async function startCapture() {
   }
 
   accumulatedTranscript = '';
+  currentExtractedData = null;
+  currentConfidence = {};
   els.liveTranscript.textContent = '';
   els.interimTranscript.textContent = '';
+  els.fieldsContainer.innerHTML = '';
+  els.outputPreview.textContent = '';
   els.transcriptArea.classList.remove('hidden');
-  els.extractSection.classList.add('hidden');
-  els.formSection.classList.add('hidden');
-  els.outputSection.classList.add('hidden');
+  // Form and output stay visible during capture (auto-extract fills them in real-time)
 
   const options = {
     deviceId: selectedDeviceId,
@@ -237,8 +239,15 @@ async function stopCapture() {
     isCapturing = false;
     setCapturingUI(false);
 
+    // Show extract section for manual trigger, but form is already visible
     els.extractSection.classList.remove('hidden');
-    els.extractSection.scrollIntoView({ behavior: 'smooth' });
+
+    // Scroll to form if it has content, otherwise scroll to extract
+    if (els.fieldsContainer.children.length > 0) {
+      els.formSection.scrollIntoView({ behavior: 'smooth' });
+    } else {
+      els.extractSection.scrollIntoView({ behavior: 'smooth' });
+    }
   } catch (err) {
     console.error('Error stopping capture:', err);
   }
