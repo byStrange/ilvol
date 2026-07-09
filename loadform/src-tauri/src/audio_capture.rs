@@ -109,9 +109,18 @@ pub fn start_capture(
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
         rt.block_on(async {
-            if let Err(e) =
-                capture_and_stream(app_handle, deepgram_api_key, options, stop_flag_clone).await
+            if let Err(e) = capture_and_stream(
+                app_handle.clone(),
+                deepgram_api_key,
+                options,
+                stop_flag_clone,
+            )
+            .await
             {
+                // Previously this only went to eprintln, which is invisible in a
+                // packaged/release build with no attached console. Surface it to
+                // the frontend so failures are actually visible to the user.
+                let _ = app_handle.emit("capture:error", e.clone());
                 eprintln!("[audio_capture] error: {}", e);
             }
         });
@@ -253,6 +262,15 @@ async fn capture_and_stream(
 }
 
 // ─── Microphone Capture (cpal, cross-platform) ─────────────────────────────
+//
+// NOTE: We used to force a StreamConfig of 16kHz/mono regardless of what the
+// device actually supports. On Windows, WASAPI shared-mode mic devices almost
+// never natively expose 16kHz mono (they're typically 44.1/48kHz stereo), so
+// build_input_stream() would fail outright with an unsupported-config error.
+// That failure was only eprintln'd, so in a packaged app it looked like
+// "recording just doesn't do anything." We now query the device's own default
+// input config, capture at whatever it natively supports, and downmix +
+// resample in the callback to the 16kHz mono Deepgram expects.
 
 async fn capture_mic(
     audio_tx: mpsc::Sender<Vec<u8>>,
@@ -269,36 +287,180 @@ async fn capture_mic(
         .get(device_index)
         .ok_or(format!("Mic device index {} not found", device_index))?;
 
-    let config = cpal::StreamConfig {
-        channels: CHANNELS,
-        sample_rate: cpal::SampleRate(SAMPLE_RATE),
-        buffer_size: cpal::BufferSize::Default,
-    };
+    // Ask the device what it can actually do instead of assuming 16kHz mono.
+    // This is the fix for the Windows "mic listed but never records" bug.
+    let supported_config = device.default_input_config().map_err(|e| {
+        format!(
+            "Failed to get default input config for this mic (often means Windows \
+             microphone permission is denied for this app — check Settings > \
+             Privacy & security > Microphone): {}",
+            e
+        )
+    })?;
+
+    let native_channels = supported_config.channels();
+    let native_sample_rate = supported_config.sample_rate().0;
+    let sample_format = supported_config.sample_format();
+    let config: cpal::StreamConfig = supported_config.into();
+
+    // Shared resampler state, carried between audio callbacks so we don't
+    // introduce clicks/discontinuities at buffer boundaries.
+    let resampler = Arc::new(std::sync::Mutex::new(Resampler::new(
+        native_sample_rate,
+        SAMPLE_RATE,
+    )));
+
+    // Runtime stream errors (as opposed to build-time errors below) come out
+    // of cpal's error callback, which is sync and has no async context. We
+    // forward them over an unbounded channel so the caller can emit them to
+    // the frontend instead of silently eprintln-ing into the void.
+    let (err_tx, mut err_rx) = mpsc::unbounded_channel::<String>();
 
     let audio_tx_clone = audio_tx.clone();
-    let stream = device
-        .build_input_stream(
+    let resampler_clone = resampler.clone();
+    let err_tx_clone = err_tx.clone();
+    let err_fn = move |err: cpal::StreamError| {
+        let _ = err_tx_clone.send(format!("CPAL mic stream error: {}", err));
+    };
+
+    let stream = match sample_format {
+        cpal::SampleFormat::F32 => device.build_input_stream(
             &config,
             move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let bytes = f32_samples_to_i16_bytes(data);
+                let mono = downmix(data, native_channels);
+                let resampled = resampler_clone.lock().unwrap().process(&mono);
+                let bytes = f32_samples_to_i16_bytes(&resampled);
                 let _ = audio_tx_clone.try_send(bytes);
             },
-            move |err| eprintln!("[audio_capture] CPAL mic error: {}", err),
+            err_fn,
             None,
+        ),
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            &config,
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let floats: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
+                let mono = downmix(&floats, native_channels);
+                let resampled = resampler_clone.lock().unwrap().process(&mono);
+                let bytes = f32_samples_to_i16_bytes(&resampled);
+                let _ = audio_tx_clone.try_send(bytes);
+            },
+            err_fn,
+            None,
+        ),
+        cpal::SampleFormat::U16 => device.build_input_stream(
+            &config,
+            move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                let floats: Vec<f32> = data
+                    .iter()
+                    .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                    .collect();
+                let mono = downmix(&floats, native_channels);
+                let resampled = resampler_clone.lock().unwrap().process(&mono);
+                let bytes = f32_samples_to_i16_bytes(&resampled);
+                let _ = audio_tx_clone.try_send(bytes);
+            },
+            err_fn,
+            None,
+        ),
+        other => {
+            return Err(format!(
+                "Unsupported mic sample format: {:?}. Please open an issue with your \
+                 device name so we can add support.",
+                other
+            ))
+        }
+    }
+    .map_err(|e| {
+        format!(
+            "Failed to build mic stream at {}Hz/{}ch (device's own reported config): {}",
+            native_sample_rate, native_channels, e
         )
-        .map_err(|e| format!("Failed to build mic stream: {}", e))?;
+    })?;
 
     stream
         .play()
         .map_err(|e| format!("Failed to start mic stream: {}", e))?;
 
-    // Wait for stop
+    // Wait for stop, forwarding any runtime stream errors we hear about.
     while !stop_flag.load(Ordering::Relaxed) {
+        if let Ok(msg) = err_rx.try_recv() {
+            eprintln!("[audio_capture] {}", msg);
+            // A stream error callback firing generally means the device
+            // dropped out from under us (unplugged, reclaimed exclusively by
+            // another app, etc). Treat it as fatal rather than spinning.
+            drop(stream);
+            return Err(msg);
+        }
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 
     drop(stream);
     Ok(())
+}
+
+// ─── Downmix N channels → mono ──────────────────────────────────────────────
+
+fn downmix(data: &[f32], channels: u16) -> Vec<f32> {
+    if channels <= 1 {
+        return data.to_vec();
+    }
+    let channels = channels as usize;
+    data.chunks(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect()
+}
+
+// ─── Simple stateful linear resampler ───────────────────────────────────────
+//
+// Not audiophile-grade, but perfectly adequate for feeding 16kHz PCM into a
+// speech-to-text API, and dependency-free. Keeps a small tail of unconsumed
+// input samples plus a fractional read position across calls so consecutive
+// buffers stitch together without clicks.
+
+struct Resampler {
+    ratio: f64,       // target_rate / native_rate
+    src_pos: f64,      // fractional read position into `pending`
+    pending: Vec<f32>, // leftover input samples from the previous call
+}
+
+impl Resampler {
+    fn new(native_rate: u32, target_rate: u32) -> Self {
+        Self {
+            ratio: target_rate as f64 / native_rate as f64,
+            src_pos: 0.0,
+            pending: Vec::new(),
+        }
+    }
+
+    fn process(&mut self, input: &[f32]) -> Vec<f32> {
+        if (self.ratio - 1.0).abs() < f64::EPSILON {
+            return input.to_vec();
+        }
+
+        self.pending.extend_from_slice(input);
+
+        let mut out = Vec::new();
+        loop {
+            let idx = self.src_pos.floor() as usize;
+            if idx + 1 >= self.pending.len() {
+                break;
+            }
+            let frac = (self.src_pos - idx as f64) as f32;
+            let s0 = self.pending[idx];
+            let s1 = self.pending[idx + 1];
+            out.push(s0 + (s1 - s0) * frac);
+            self.src_pos += 1.0 / self.ratio;
+        }
+
+        // Drop fully-consumed samples, keep the tail + carry over position.
+        let consumed = self.src_pos.floor() as usize;
+        if consumed > 0 && consumed <= self.pending.len() {
+            self.pending.drain(0..consumed);
+            self.src_pos -= consumed as f64;
+        }
+
+        out
+    }
 }
 
 // ─── System Audio Capture (Windows WASAPI loopback) ─────────────────────────
