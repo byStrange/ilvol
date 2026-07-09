@@ -230,7 +230,27 @@ async fn capture_and_stream(
     if options.device_id.starts_with("mic:") {
         let idx_str = options.device_id.trim_start_matches("mic:");
         let idx: usize = idx_str.parse().unwrap_or(0);
-        capture_mic(audio_tx.clone(), stop_flag.clone(), idx).await?;
+
+        if options.mix_system_audio {
+            // `mix_system_audio` used to be accepted from the frontend and
+            // stored on CaptureOptions, but nothing ever read it here — the
+            // branch only ever looked at device_id, so it silently ran mic
+            // OR system, never both, no matter what the checkbox said.
+            #[cfg(target_os = "windows")]
+            {
+                mix_mic_and_system(audio_tx.clone(), stop_flag.clone(), idx).await?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                eprintln!(
+                    "[audio_capture] system audio mixing requested but only \
+                     available on Windows; falling back to mic-only"
+                );
+                capture_mic(audio_tx.clone(), stop_flag.clone(), idx).await?;
+            }
+        } else {
+            capture_mic(audio_tx.clone(), stop_flag.clone(), idx).await?;
+        }
     } else if options.device_id == "system:default" {
         #[cfg(target_os = "windows")]
         {
@@ -396,6 +416,122 @@ async fn capture_mic(
 
     drop(stream);
     Ok(())
+}
+
+// ─── Mixed Capture: mic + system audio, summed into one stream ─────────────
+//
+// Both capture_mic and capture_system_audio_windows already independently
+// produce 16kHz mono PCM16 chunks on their own channel. The bug here was
+// that nothing ever ran them at the same time, let alone combined their
+// output — mix_system_audio was read nowhere. This runs both concurrently
+// and additively mixes matching sample ranges (silence-padding whichever
+// side is momentarily behind) into a single stream for the Deepgram socket.
+
+#[cfg(target_os = "windows")]
+async fn mix_mic_and_system(
+    audio_tx: mpsc::Sender<Vec<u8>>,
+    stop_flag: Arc<AtomicBool>,
+    mic_index: usize,
+) -> Result<(), String> {
+    let (mic_tx, mut mic_rx) = mpsc::channel::<Vec<u8>>(256);
+    let (sys_tx, mut sys_rx) = mpsc::channel::<Vec<u8>>(256);
+
+    let mic_stop = stop_flag.clone();
+    let mic_task = tokio::spawn(async move { capture_mic(mic_tx, mic_stop, mic_index).await });
+
+    let sys_stop = stop_flag.clone();
+    let sys_task =
+        tokio::spawn(async move { capture_system_audio_windows(sys_tx, sys_stop).await });
+
+    // Per-source sample queues, so chunks that arrive at slightly different
+    // times/sizes from the two independent capture loops can still be
+    // aligned before mixing.
+    let mut mic_pending: Vec<i16> = Vec::new();
+    let mut sys_pending: Vec<i16> = Vec::new();
+    let mut mic_closed = false;
+    let mut sys_closed = false;
+
+    loop {
+        if mic_closed && sys_closed {
+            break;
+        }
+
+        tokio::select! {
+            msg = mic_rx.recv(), if !mic_closed => {
+                match msg {
+                    Some(bytes) => mic_pending.extend(bytes_to_i16(&bytes)),
+                    None => mic_closed = true,
+                }
+            }
+            msg = sys_rx.recv(), if !sys_closed => {
+                match msg {
+                    Some(bytes) => sys_pending.extend(bytes_to_i16(&bytes)),
+                    None => sys_closed = true,
+                }
+            }
+        }
+
+        // A sender can be dropped (channel "closed") in the same instant a
+        // message it already sent is still sitting in the buffer. Without
+        // this drain, select! picking up the close notification before the
+        // buffered message would wrongly treat that last chunk as silence
+        // instead of mixing it — most likely right at the very end of a
+        // recording, when both sides tend to stop around the same time.
+        while let Ok(bytes) = mic_rx.try_recv() {
+            mic_pending.extend(bytes_to_i16(&bytes));
+        }
+        while let Ok(bytes) = sys_rx.try_recv() {
+            sys_pending.extend(bytes_to_i16(&bytes));
+        }
+
+        // While both sources are still live, only mix as far as both queues
+        // overlap, so we don't zero-pad a side that's simply a few ms behind.
+        // Once a side has closed for good, flush whatever's left on the
+        // other, treating the closed side as silence from here on.
+        let ready = if mic_closed || sys_closed {
+            mic_pending.len().max(sys_pending.len())
+        } else {
+            mic_pending.len().min(sys_pending.len())
+        };
+
+        if ready > 0 {
+            let mut mixed = Vec::with_capacity(ready);
+            for i in 0..ready {
+                let m = mic_pending.get(i).copied().unwrap_or(0) as i32;
+                let s = sys_pending.get(i).copied().unwrap_or(0) as i32;
+                mixed.push((m + s).clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+            }
+
+            let drain_mic = ready.min(mic_pending.len());
+            mic_pending.drain(0..drain_mic);
+            let drain_sys = ready.min(sys_pending.len());
+            sys_pending.drain(0..drain_sys);
+
+            let bytes: Vec<u8> = mixed.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let _ = audio_tx.try_send(bytes);
+        }
+    }
+
+    let mic_result = mic_task
+        .await
+        .map_err(|e| format!("Mic capture task panicked: {}", e))?;
+    let sys_result = sys_task
+        .await
+        .map_err(|e| format!("System audio capture task panicked: {}", e))?;
+
+    // Surface whichever side actually failed rather than masking one with
+    // the other, e.g. if the mic got unplugged mid-mix.
+    mic_result?;
+    sys_result?;
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn bytes_to_i16(bytes: &[u8]) -> Vec<i16> {
+    bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect()
 }
 
 // ─── Downmix N channels → mono ──────────────────────────────────────────────
