@@ -30,7 +30,7 @@ ollama-rs = { version = "0.3", features = ["headers"] }
 cpal = "0.15"
 
 # Async runtime + websockets for Deepgram streaming
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-tungstenite = { version = "0.23", features = ["native-tls"] }
 url = "2"
 bytes = "1"
