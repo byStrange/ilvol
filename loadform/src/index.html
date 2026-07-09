@@ -201,7 +201,10 @@
 
           <!-- Live Transcript -->
           <div id="transcript-area" class="mt-4 p-3 bg-slate-900 rounded-lg min-h-[80px] border border-slate-700 hidden">
-            <div class="text-xs text-slate-500 mb-1">Live Transcript:</div>
+            <div class="flex items-center justify-between mb-1">
+              <span class="text-xs text-slate-500">Live Transcript:</span>
+              <span id="capture-status" class="text-xs font-medium text-slate-400">Listening...</span>
+            </div>
             <div id="live-transcript" class="text-sm text-slate-300 leading-relaxed"></div>
             <div id="interim-transcript" class="text-sm text-slate-500 italic mt-1"></div>
           </div>
