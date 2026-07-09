@@ -38,6 +38,9 @@ let currentExtractedData = null;
 let currentConfidence = {};
 let devices = [];
 let selectedDeviceId = '';
+let autoExtractEnabled = false;
+let lastExtractTime = 0;
+const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
 
 // ─── Auth State ─────────────────────────────────────────────────────────────
 
@@ -61,6 +64,7 @@ const els = {
   extractSection: document.getElementById('extract-section'),
   extractBtn: document.getElementById('extract-btn'),
   extractionSpinner: document.getElementById('extraction-spinner'),
+  autoExtractCheckbox: document.getElementById('auto-extract-checkbox'),
   formSection: document.getElementById('form-section'),
   fieldsContainer: document.getElementById('fields-container'),
   outputSection: document.getElementById('output-section'),
@@ -90,12 +94,18 @@ const els = {
 const FIELDS = [
   { key: 'pickup_location', label: '📍 Pickup Location', placeholder: 'e.g. Amarillo, TX' },
   { key: 'pickup_datetime', label: '📅 Pickup Date/Time', placeholder: 'e.g. Tue 6/24, 8:00 AM' },
+  { key: 'pickup_type', label: '📥 Pickup Type', placeholder: 'e.g. Live load, Drop and hook, Preloaded' },
+  { key: 'pickup_window', label: '⏰ Pickup Window', placeholder: 'e.g. FCFS 10am-4pm, Appointment 2PM' },
+  { key: 'stops', label: '🛑 Stops', placeholder: 'e.g. Dallas, TX → Houston, TX, or None' },
   { key: 'delivery_location', label: '📍 Delivery Location', placeholder: 'e.g. Tulsa, OK' },
   { key: 'delivery_datetime', label: '📅 Delivery Date/Time', placeholder: 'e.g. Thu 6/26, 6:00 AM' },
+  { key: 'delivery_type', label: '📤 Delivery Type', placeholder: 'e.g. Live unload, Drop and hook, Empty out' },
+  { key: 'delivery_window', label: '⏰ Delivery Window', placeholder: 'e.g. FCFS 8am-5pm, Appointment 9AM' },
   { key: 'commodity', label: '📦 Commodity', placeholder: 'e.g. Frozen chicken' },
   { key: 'equipment_type', label: '🚛 Equipment Type', placeholder: 'e.g. Reefer, Dry Van' },
   { key: 'rate', label: '💰 Rate', placeholder: 'e.g. $2.80/mile ($2,100 total)' },
   { key: 'weight', label: '⚖️ Weight', placeholder: 'e.g. 43,000 lbs' },
+  { key: 'trailer_instructions', label: '🔗 Trailer Instructions', placeholder: 'e.g. Pick empty → live load → live unload' },
   { key: 'additional_notes', label: '📝 Additional Notes', placeholder: 'e.g. Lumpers required' },
 ];
 
@@ -260,8 +270,67 @@ function onTranscriptChunk(chunk) {
   if (chunk.is_final) {
     accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunk.text;
     updateLiveTranscript();
+
+    // Auto-extract: when auto-extract is on and enough new text has accumulated
+    if (autoExtractEnabled && accumulatedTranscript.trim()) {
+      const now = Date.now();
+      if (now - lastExtractTime > AUTO_EXTRACT_DEBOUNCE_MS) {
+        lastExtractTime = now;
+        debouncedAutoExtract();
+      }
+    }
   } else {
     els.interimTranscript.textContent = chunk.text;
+  }
+}
+
+// ─── Auto-Extract Flow ────────────────────────────────────────────────────
+
+let autoExtractTimeout = null;
+
+function debouncedAutoExtract() {
+  if (autoExtractTimeout) {
+    clearTimeout(autoExtractTimeout);
+  }
+  autoExtractTimeout = setTimeout(() => {
+    autoExtractTimeout = null;
+    if (autoExtractEnabled && isCapturing && accumulatedTranscript.trim()) {
+      performExtract(false);
+    }
+  }, 1500);
+}
+
+async function performExtract(showSpinner = true) {
+  if (!accumulatedTranscript.trim()) {
+    return;
+  }
+
+  if (showSpinner) {
+    setExtractingUI(true);
+  }
+
+  try {
+    const result = await tauriInvoke('extract_load_data', {
+      req: { transcript: accumulatedTranscript }
+    });
+
+    currentExtractedData = result.data;
+    currentConfidence = result.confidence;
+
+    renderForm(result.data, result.confidence);
+    els.formSection.classList.remove('hidden');
+
+    if (showSpinner) {
+      els.formSection.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    renderOutput();
+  } catch (err) {
+    console.error('Auto-extract failed:', err);
+  } finally {
+    if (showSpinner) {
+      setExtractingUI(false);
+    }
   }
 }
 
@@ -276,32 +345,7 @@ function onTranscriptComplete(event) {
 // ─── Extraction Flow ──────────────────────────────────────────────────────
 
 async function handleExtract() {
-  if (!accumulatedTranscript.trim()) {
-    alert('No transcript to extract from. Start a capture first.');
-    return;
-  }
-
-  setExtractingUI(true);
-
-  try {
-    const result = await tauriInvoke('extract_load_data', {
-      req: { transcript: accumulatedTranscript }
-    });
-
-    currentExtractedData = result.data;
-    currentConfidence = result.confidence;
-
-    renderForm(result.data, result.confidence);
-    els.formSection.classList.remove('hidden');
-    els.formSection.scrollIntoView({ behavior: 'smooth' });
-
-    renderOutput();
-  } catch (err) {
-    console.error('Extraction failed:', err);
-    alert('Extraction failed: ' + err);
-  } finally {
-    setExtractingUI(false);
-  }
+  await performExtract(true);
 }
 
 function setExtractingUI(extracting) {
@@ -593,6 +637,18 @@ window.addEventListener('DOMContentLoaded', () => {
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
   els.newLoadBtn.addEventListener('click', resetForm);
+
+  // Auto-extract toggle
+  if (els.autoExtractCheckbox) {
+    els.autoExtractCheckbox.addEventListener('change', (e) => {
+      autoExtractEnabled = e.target.checked;
+      if (autoExtractEnabled && isCapturing && accumulatedTranscript.trim()) {
+        // Immediately extract if already capturing
+        lastExtractTime = Date.now();
+        performExtract(false);
+      }
+    });
+  }
 
   // Auth event listeners
   els.authForm.addEventListener('submit', handleAuthSubmit);

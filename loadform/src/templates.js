@@ -7,10 +7,17 @@
 
 export const DEFAULT_TEMPLATE = `LOAD DETAILS
 Pickup: {pickup_location} — {pickup_datetime}
+Pickup Type: {pickup_type}
+Pickup Window: {pickup_window}
 Delivery: {delivery_location} — {delivery_datetime}
+Delivery Type: {delivery_type}
+Delivery Window: {delivery_window}
+Stops: {stops}
 Rate: {rate}
 Weight: {weight}
 Equipment: {equipment}
+Commodity: {commodity}
+Trailer Instructions: {trailer_instructions}
 Notes: {notes}`;
 
 /**
@@ -25,6 +32,12 @@ Notes: {notes}`;
 const FIELD_ALIASES = {
   equipment: 'equipment_type',
   notes: 'additional_notes',
+  stops: 'stops',
+  pickup_type: 'pickup_type',
+  pickup_window: 'pickup_window',
+  delivery_type: 'delivery_type',
+  delivery_window: 'delivery_window',
+  trailer_instructions: 'trailer_instructions',
 };
 
 /**

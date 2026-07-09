@@ -38,13 +38,25 @@ pub struct LoadFormData {
     #[serde(default)]
     pub pickup_datetime: String,
     #[serde(default)]
+    pub pickup_type: String,
+    #[serde(default)]
+    pub pickup_window: String,
+    #[serde(default)]
     pub delivery_location: String,
     #[serde(default)]
     pub delivery_datetime: String,
     #[serde(default)]
+    pub delivery_type: String,
+    #[serde(default)]
+    pub delivery_window: String,
+    #[serde(default)]
+    pub stops: String,
+    #[serde(default)]
     pub commodity: String,
     #[serde(default)]
     pub equipment_type: String,
+    #[serde(default)]
+    pub trailer_instructions: String,
     #[serde(default)]
     pub rate: String,
     #[serde(default)]
@@ -101,13 +113,19 @@ async fn extract_load_data(
         r#"You are a logistics data extraction assistant. Given a broker conversation transcript, extract the following fields:
 - pickup_location: where the load picks up (city, state)
 - pickup_datetime: when the load picks up (day, date, time)
-- delivery_location: where the load delivers (city, state)  
+- pickup_type: how the pickup works — "live load" (driver waits while loaded), "drop and hook" (drop empty, grab preloaded), "empty in" (arrive with empty trailer), "preloaded" (trailer already loaded, hook and go)
+- pickup_window: time window or appointment type — e.g. "FCFS 10am-4pm", "Appointment 2:00 PM", "ASAP", "24/7"
+- delivery_location: where the load delivers (city, state)
 - delivery_datetime: when the load delivers (day, date, time)
-- commodity: what is being shipped
-- equipment_type: truck type (reefer, dry van, flatbed, step deck, etc.)
+- delivery_type: how the delivery works — "live unload" (driver waits while unloaded), "drop and hook" (drop loaded, grab empty), "empty out" (leave with empty trailer)
+- delivery_window: time window or appointment type for delivery — e.g. "FCFS 8am-5pm", "Appointment 9:00 AM"
+- stops: any intermediate stops between pickup and delivery, or "none" if direct. Format as "City, ST → City, ST" for multiple.
+- commodity: what is being shipped (be specific: "frozen chicken", "steel coils", "retail goods")
+- equipment_type: truck type (reefer, dry van, flatbed, step deck, conestoga, etc.)
+- trailer_instructions: full operation chain for drivers without trailers — e.g. "Pick empty nearby → live load → live unload", "Hook preloaded at shipper → drop and hook at receiver", "Empty in → live load → drop and hook"
 - rate: pay rate mentioned ($/mile or total amount)
 - weight: load weight in lbs
-- additional_notes: any other relevant info (lumpers, appointments, hazmat, etc.)
+- additional_notes: any other relevant info (lumpers, appointments, hazmat, T-check, pallet jack, etc.)
 
 For each field, provide a confidence score from 0.0 to 1.0.
 Return ONLY valid JSON in this exact format with no markdown code blocks:
@@ -115,10 +133,16 @@ Return ONLY valid JSON in this exact format with no markdown code blocks:
   "data": {{
     "pickup_location": "...",
     "pickup_datetime": "...",
+    "pickup_type": "...",
+    "pickup_window": "...",
     "delivery_location": "...",
     "delivery_datetime": "...",
+    "delivery_type": "...",
+    "delivery_window": "...",
+    "stops": "...",
     "commodity": "...",
     "equipment_type": "...",
+    "trailer_instructions": "...",
     "rate": "...",
     "weight": "...",
     "additional_notes": "..."
@@ -126,10 +150,16 @@ Return ONLY valid JSON in this exact format with no markdown code blocks:
   "confidence": {{
     "pickup_location": 0.95,
     "pickup_datetime": 0.87,
+    "pickup_type": 0.82,
+    "pickup_window": 0.90,
     "delivery_location": 0.98,
     "delivery_datetime": 0.91,
+    "delivery_type": 0.85,
+    "delivery_window": 0.88,
+    "stops": 0.95,
     "commodity": 0.82,
     "equipment_type": 0.99,
+    "trailer_instructions": 0.75,
     "rate": 0.89,
     "weight": 0.95,
     "additional_notes": 0.75
@@ -329,6 +359,7 @@ mod tests {
             rate: "$2.80/mile ($2,100 total)".to_string(),
             weight: "43,000 lbs".to_string(),
             additional_notes: "Lumpers required".to_string(),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&data).unwrap();
