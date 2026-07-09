@@ -57,6 +57,7 @@ const els = {
   transcriptArea: document.getElementById('transcript-area'),
   liveTranscript: document.getElementById('live-transcript'),
   interimTranscript: document.getElementById('interim-transcript'),
+  captureStatus: document.getElementById('capture-status'),
   deviceSelect: document.getElementById('device-select'),
   deviceHint: document.getElementById('device-hint'),
   mixSystemRow: document.getElementById('mix-system-row'),
@@ -215,6 +216,7 @@ async function startCapture() {
   els.outputPreview.textContent = '';
   els.transcriptArea.classList.remove('hidden');
   // Form and output stay visible during capture (auto-extract fills them in real-time)
+  setCaptureStatus('Listening...', 'text-red-400');
 
   const options = {
     deviceId: selectedDeviceId,
@@ -238,6 +240,7 @@ async function stopCapture() {
     await tauriInvoke('stop_capture');
     isCapturing = false;
     setCapturingUI(false);
+    setCaptureStatus('', 'text-slate-400');
 
     // Show extract section for manual trigger, but form is already visible
     els.extractSection.classList.remove('hidden');
@@ -280,6 +283,13 @@ function onTranscriptChunk(chunk) {
     accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunk.text;
     updateLiveTranscript();
 
+    // Show speech-pause indicator
+    if (autoExtractEnabled) {
+      setCaptureStatus('Thinking...', 'text-emerald-400');
+    } else {
+      setCaptureStatus('Transcript ready', 'text-blue-400');
+    }
+
     // Auto-extract: when auto-extract is on and enough new text has accumulated
     if (autoExtractEnabled && accumulatedTranscript.trim()) {
       const now = Date.now();
@@ -289,7 +299,18 @@ function onTranscriptChunk(chunk) {
       }
     }
   } else {
+    // Interim: broker is actively speaking
+    setCaptureStatus('Listening...', 'text-red-400');
     els.interimTranscript.textContent = chunk.text;
+  }
+}
+
+// ─── Status Indicator ─────────────────────────────────────────────────────
+
+function setCaptureStatus(text, colorClass) {
+  if (els.captureStatus) {
+    els.captureStatus.textContent = text;
+    els.captureStatus.className = 'text-xs font-medium ' + colorClass;
   }
 }
 
@@ -298,9 +319,7 @@ function onTranscriptChunk(chunk) {
 let autoExtractTimeout = null;
 
 function debouncedAutoExtract() {
-  if (autoExtractTimeout) {
-    clearTimeout(autoExtractTimeout);
-  }
+  clearTimeout(autoExtractTimeout);
   autoExtractTimeout = setTimeout(() => {
     autoExtractTimeout = null;
     if (autoExtractEnabled && isCapturing && accumulatedTranscript.trim()) {
@@ -316,6 +335,8 @@ async function performExtract(showSpinner = true) {
 
   if (showSpinner) {
     setExtractingUI(true);
+  } else {
+    setCaptureStatus('AI extracting...', 'text-amber-400');
   }
 
   try {
@@ -334,8 +355,10 @@ async function performExtract(showSpinner = true) {
     }
 
     renderOutput();
+    setCaptureStatus('Fields updated', 'text-emerald-400');
   } catch (err) {
     console.error('Auto-extract failed:', err);
+    setCaptureStatus('Extract failed', 'text-red-400');
   } finally {
     if (showSpinner) {
       setExtractingUI(false);
@@ -469,6 +492,7 @@ function resetForm() {
   els.outputSection.classList.add('hidden');
   els.fieldsContainer.innerHTML = '';
   els.outputPreview.textContent = '';
+  setCaptureStatus('', 'text-slate-400');
 
   setCapturingUI(false);
 }
