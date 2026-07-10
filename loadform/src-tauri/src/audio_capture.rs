@@ -297,7 +297,11 @@ async fn capture_mic(
     stop_flag: Arc<AtomicBool>,
     device_index: usize,
 ) -> Result<(), String> {
-    let host = cpal::default_host();
+    // cpal::Stream is !Send (holds WASAPI/raw handles), so the whole capture
+    // body runs on a blocking-pool thread and never crosses an await. The
+    // future returned here is therefore Send and safe to tokio::spawn.
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let host = cpal::default_host();
     let devices: Vec<_> = host
         .input_devices()
         .map_err(|e| format!("Failed to list input devices: {}", e))?
@@ -411,11 +415,14 @@ async fn capture_mic(
             drop(stream);
             return Err(msg);
         }
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 
     drop(stream);
     Ok(())
+    })
+    .await
+    .map_err(|e| format!("Mic capture task panicked: {}", e))?
 }
 
 // ─── Mixed Capture: mic + system audio, summed into one stream ─────────────
@@ -630,7 +637,7 @@ async fn capture_system_audio_windows(
     // WaveFormat::new takes usize for sample rate, returns Self (not Result)
     let wavefmt = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE as usize, CHANNELS as usize, None);
 
-    let (def_time, min_time) = audio_client
+    let (_def_time, min_time) = audio_client
         .get_device_period()
         .map_err(|e| format!("Failed to get device period: {:?}", e))?;
 
