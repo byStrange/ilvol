@@ -34,6 +34,82 @@ pub struct TranscriptChunk {
     pub timestamp: u64,
 }
 
+// ─── Audio Level Metering (dev visualization) ──────────────────────────────
+//
+// The frontend wants a minimalistic "is this input actually picking up sound"
+// waveform per source. We keep a small rolling window of recent mono samples
+// per source (touched only in the realtime cpal callback) and a separate tokio
+// task downsamples that window into METER_BARS amplitude values ~30×/s and
+// emits `audio:level` events. Keeping the emit off the audio callback avoids
+// allocating/locking on the realtime thread.
+
+#[derive(Clone, Serialize)]
+pub struct AudioLevel {
+    pub source: String, // "mic" | "system"
+    pub bars: Vec<f32>, // 0.0..1.0 each
+}
+
+const METER_BARS: usize = 24;
+const METER_WINDOW: usize = 768; // ~48ms of 16kHz mono — short enough to feel live
+const METER_INTERVAL_MS: u64 = 33; // ~30fps
+
+type MeterBuffer = Arc<std::sync::Mutex<Vec<f32>>>;
+
+fn meter_push(buf: &MeterBuffer, samples: &[f32]) {
+    let mut g = buf.lock().unwrap();
+    g.extend_from_slice(samples);
+    let len = g.len();
+    if len > METER_WINDOW {
+        // Drain in one shot rather than per-sample; the window is small.
+        g.drain(0..len - METER_WINDOW);
+    }
+}
+
+fn meter_bars(buf: &MeterBuffer) -> Vec<f32> {
+    let g = buf.lock().unwrap();
+    let n = g.len();
+    if n == 0 {
+        return vec![0.0; METER_BARS];
+    }
+    // Split the window into METER_BARS equal-ish segments and take the RMS of
+    // each. RMS (rather than peak) gives a smoother, less jittery waveform that
+    // still clearly shows when a source is active. The *3.0 gain lifts normal
+    // speech above the noise floor so quiet-but-working mics are visibly live.
+    let group = (n + METER_BARS - 1) / METER_BARS;
+    let mut bars = Vec::with_capacity(METER_BARS);
+    for i in 0..METER_BARS {
+        let start = (i * group).min(n);
+        let end = ((start + group).min(n)).max(start);
+        let mut sum = 0.0;
+        let mut count = 0u32;
+        for s in &g[start..end] {
+            sum += s * s;
+            count += 1;
+        }
+        let rms = if count > 0 { (sum / count as f32).sqrt() } else { 0.0 };
+        bars.push((rms * 3.0).clamp(0.0, 1.0));
+    }
+    bars
+}
+
+fn spawn_meter_task(
+    app: AppHandle,
+    stop_flag: Arc<AtomicBool>,
+    sources: Vec<(String, MeterBuffer)>,
+) {
+    tokio::spawn(async move {
+        while !stop_flag.load(Ordering::Relaxed) {
+            for (source, buf) in &sources {
+                let _ = app.emit("audio:level", AudioLevel {
+                    source: source.clone(),
+                    bars: meter_bars(buf),
+                });
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(METER_INTERVAL_MS)).await;
+        }
+    });
+}
+
 // ─── Capture State ──────────────────────────────────────────────────────────
 
 pub struct CaptureHandle {
@@ -227,6 +303,13 @@ async fn capture_and_stream(
     });
 
     // ─── Start Audio Capture based on device selection ────────────────────────
+    //
+    // Each branch sets up one MeterBuffer per active source and spawns a meter
+    // task that emits `audio:level` events ~30×/s until stop_flag is set. The
+    // capture call below blocks until stop (Ok) or an error (Err); on Err we
+    // flip stop_flag ourselves so the meter task can't outlive the capture and
+    // leak. The meter task is detached — it exits on its own once stop_flag is
+    // true, so we don't need to await it.
     if options.device_id.starts_with("mic:") {
         let idx_str = options.device_id.trim_start_matches("mic:");
         let idx: usize = idx_str.parse().unwrap_or(0);
@@ -238,7 +321,28 @@ async fn capture_and_stream(
             // OR system, never both, no matter what the checkbox said.
             #[cfg(target_os = "windows")]
             {
-                mix_mic_and_system(audio_tx.clone(), stop_flag.clone(), idx).await?;
+                let mic_meter: MeterBuffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let sys_meter: MeterBuffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+                spawn_meter_task(
+                    app_handle.clone(),
+                    stop_flag.clone(),
+                    vec![
+                        ("mic".to_string(), mic_meter.clone()),
+                        ("system".to_string(), sys_meter.clone()),
+                    ],
+                );
+                let r = mix_mic_and_system(
+                    audio_tx.clone(),
+                    stop_flag.clone(),
+                    idx,
+                    mic_meter,
+                    sys_meter,
+                )
+                .await;
+                if r.is_err() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
+                r?;
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -246,15 +350,46 @@ async fn capture_and_stream(
                     "[audio_capture] system audio mixing requested but only \
                      available on Windows; falling back to mic-only"
                 );
-                capture_mic(audio_tx.clone(), stop_flag.clone(), idx).await?;
+                let meter: MeterBuffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+                spawn_meter_task(
+                    app_handle.clone(),
+                    stop_flag.clone(),
+                    vec![("mic".to_string(), meter.clone())],
+                );
+                let r = capture_mic(audio_tx.clone(), stop_flag.clone(), idx, meter).await;
+                if r.is_err() {
+                    stop_flag.store(true, Ordering::Relaxed);
+                }
+                r?;
             }
         } else {
-            capture_mic(audio_tx.clone(), stop_flag.clone(), idx).await?;
+            let meter: MeterBuffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+            spawn_meter_task(
+                app_handle.clone(),
+                stop_flag.clone(),
+                vec![("mic".to_string(), meter.clone())],
+            );
+            let r = capture_mic(audio_tx.clone(), stop_flag.clone(), idx, meter).await;
+            if r.is_err() {
+                stop_flag.store(true, Ordering::Relaxed);
+            }
+            r?;
         }
     } else if options.device_id == "system:default" {
         #[cfg(target_os = "windows")]
         {
-            capture_system_audio_windows(audio_tx.clone(), stop_flag.clone()).await?;
+            let meter: MeterBuffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+            spawn_meter_task(
+                app_handle.clone(),
+                stop_flag.clone(),
+                vec![("system".to_string(), meter.clone())],
+            );
+            let r =
+                capture_system_audio_windows(audio_tx.clone(), stop_flag.clone(), meter).await;
+            if r.is_err() {
+                stop_flag.store(true, Ordering::Relaxed);
+            }
+            r?;
         }
         #[cfg(not(target_os = "windows"))]
         {
@@ -296,6 +431,7 @@ async fn capture_mic(
     audio_tx: mpsc::Sender<Vec<u8>>,
     stop_flag: Arc<AtomicBool>,
     device_index: usize,
+    meter: MeterBuffer,
 ) -> Result<(), String> {
     // cpal::Stream is !Send (holds WASAPI/raw handles), so the whole capture
     // body runs on a blocking-pool thread and never crosses an await. The
@@ -348,44 +484,56 @@ async fn capture_mic(
     };
 
     let stream = match sample_format {
-        cpal::SampleFormat::F32 => device.build_input_stream(
-            &config,
-            move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                let mono = downmix(data, native_channels);
-                let resampled = resampler_clone.lock().unwrap().process(&mono);
-                let bytes = f32_samples_to_i16_bytes(&resampled);
-                let _ = audio_tx_clone.try_send(bytes);
-            },
-            err_fn,
-            None,
-        ),
-        cpal::SampleFormat::I16 => device.build_input_stream(
-            &config,
-            move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                let floats: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
-                let mono = downmix(&floats, native_channels);
-                let resampled = resampler_clone.lock().unwrap().process(&mono);
-                let bytes = f32_samples_to_i16_bytes(&resampled);
-                let _ = audio_tx_clone.try_send(bytes);
-            },
-            err_fn,
-            None,
-        ),
-        cpal::SampleFormat::U16 => device.build_input_stream(
-            &config,
-            move |data: &[u16], _: &cpal::InputCallbackInfo| {
-                let floats: Vec<f32> = data
-                    .iter()
-                    .map(|&s| (s as f32 - 32768.0) / 32768.0)
-                    .collect();
-                let mono = downmix(&floats, native_channels);
-                let resampled = resampler_clone.lock().unwrap().process(&mono);
-                let bytes = f32_samples_to_i16_bytes(&resampled);
-                let _ = audio_tx_clone.try_send(bytes);
-            },
-            err_fn,
-            None,
-        ),
+        cpal::SampleFormat::F32 => {
+            let meter_cb = meter.clone();
+            device.build_input_stream(
+                &config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let mono = downmix(data, native_channels);
+                    let resampled = resampler_clone.lock().unwrap().process(&mono);
+                    meter_push(&meter_cb, &resampled);
+                    let bytes = f32_samples_to_i16_bytes(&resampled);
+                    let _ = audio_tx_clone.try_send(bytes);
+                },
+                err_fn,
+                None,
+            )
+        }
+        cpal::SampleFormat::I16 => {
+            let meter_cb = meter.clone();
+            device.build_input_stream(
+                &config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let floats: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
+                    let mono = downmix(&floats, native_channels);
+                    let resampled = resampler_clone.lock().unwrap().process(&mono);
+                    meter_push(&meter_cb, &resampled);
+                    let bytes = f32_samples_to_i16_bytes(&resampled);
+                    let _ = audio_tx_clone.try_send(bytes);
+                },
+                err_fn,
+                None,
+            )
+        }
+        cpal::SampleFormat::U16 => {
+            let meter_cb = meter.clone();
+            device.build_input_stream(
+                &config,
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    let floats: Vec<f32> = data
+                        .iter()
+                        .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                        .collect();
+                    let mono = downmix(&floats, native_channels);
+                    let resampled = resampler_clone.lock().unwrap().process(&mono);
+                    meter_push(&meter_cb, &resampled);
+                    let bytes = f32_samples_to_i16_bytes(&resampled);
+                    let _ = audio_tx_clone.try_send(bytes);
+                },
+                err_fn,
+                None,
+            )
+        }
         other => {
             return Err(format!(
                 "Unsupported mic sample format: {:?}. Please open an issue with your \
@@ -439,16 +587,20 @@ async fn mix_mic_and_system(
     audio_tx: mpsc::Sender<Vec<u8>>,
     stop_flag: Arc<AtomicBool>,
     mic_index: usize,
+    mic_meter: MeterBuffer,
+    sys_meter: MeterBuffer,
 ) -> Result<(), String> {
     let (mic_tx, mut mic_rx) = mpsc::channel::<Vec<u8>>(256);
     let (sys_tx, mut sys_rx) = mpsc::channel::<Vec<u8>>(256);
 
     let mic_stop = stop_flag.clone();
-    let mic_task = tokio::spawn(async move { capture_mic(mic_tx, mic_stop, mic_index).await });
+    let mic_task =
+        tokio::spawn(async move { capture_mic(mic_tx, mic_stop, mic_index, mic_meter).await });
 
     let sys_stop = stop_flag.clone();
-    let sys_task =
-        tokio::spawn(async move { capture_system_audio_windows(sys_tx, sys_stop).await });
+    let sys_task = tokio::spawn(async move {
+        capture_system_audio_windows(sys_tx, sys_stop, sys_meter).await
+    });
 
     // Per-source sample queues, so chunks that arrive at slightly different
     // times/sizes from the two independent capture loops can still be
@@ -612,6 +764,7 @@ impl Resampler {
 async fn capture_system_audio_windows(
     audio_tx: mpsc::Sender<Vec<u8>>,
     stop_flag: Arc<AtomicBool>,
+    meter: MeterBuffer,
 ) -> Result<(), String> {
     use wasapi::{
         initialize_mta, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat,
@@ -707,6 +860,7 @@ async fn capture_system_audio_windows(
         // WAVEFORMATEXTENSIBLE with Float subtype gives us f32 data
         let bytes_read = frames_read as usize * blockalign;
         let f32_samples: &[f32] = bytemuck::cast_slice(&buffer[..bytes_read]);
+        meter_push(&meter, f32_samples);
         let i16_bytes = f32_samples_to_i16_bytes(f32_samples);
 
         // Send to channel
@@ -736,6 +890,7 @@ fn f32_samples_to_i16_bytes(samples: &[f32]) -> Vec<u8> {
 async fn capture_system_audio_windows(
     _audio_tx: mpsc::Sender<Vec<u8>>,
     _stop_flag: Arc<AtomicBool>,
+    _meter: MeterBuffer,
 ) -> Result<(), String> {
     Err("System audio capture is only available on Windows".to_string())
 }
