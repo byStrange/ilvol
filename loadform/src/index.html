@@ -4,7 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>LoadForm</title>
+    <link rel="stylesheet" href="/styles.css" />
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
     <script>
       tailwind.config = {
         darkMode: 'class',
@@ -17,86 +24,65 @@
                 950: '#020617',
               },
             },
+            fontFamily: {
+              sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+              mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+            },
           },
         },
       };
     </script>
-    <style>
-      body { background-color: #0f172a; color: #e2e8f0; }
-      .confidence-bar {
-        transition: width 0.3s ease;
-      }
-      .fade-in {
-        animation: fadeIn 0.3s ease-in;
-      }
-      @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(4px); }
-        to { opacity: 1; transform: translateY(0); }
-      }
-      .pulse-dot {
-        animation: pulse 1.5s infinite;
-      }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
-      }
-      /* Minimalistic per-source soundwave meters */
-      .meter-bar {
-        width: 4px;
-        min-height: 2px;
-        background: linear-gradient(to top, #059669, #34d399);
-        border-radius: 2px;
-        transition: height 70ms linear;
-      }
-      .meter-bar.system {
-        background: linear-gradient(to top, #2563eb, #60a5fa);
-      }
-    </style>
   </head>
-  <body class="min-h-screen bg-slate-900 text-slate-200 antialiased">
+  <body class="min-h-screen text-slate-200 antialiased">
     <!-- Auth Modal -->
-    <div id="auth-modal" class="fixed inset-0 z-50 bg-slate-950/90 flex items-center justify-center">
-      <div class="bg-slate-850 border border-slate-700 rounded-xl p-8 w-full max-w-sm shadow-2xl">
-        <h2 id="auth-title" class="text-xl font-bold text-white mb-6 text-center">Sign In</h2>
-        
+    <div id="auth-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+      <div class="glass-strong glass-lit rounded-2xl p-8 w-full max-w-sm">
+        <div class="flex flex-col items-center mb-6">
+          <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center font-extrabold text-slate-900 text-lg shadow-lg shadow-emerald-500/30 mb-3">
+            L
+          </div>
+          <h2 id="auth-title" class="text-xl font-bold text-white">Sign In</h2>
+          <p class="text-xs text-slate-400 mt-1">Dispatch assistant for brokers</p>
+        </div>
+
         <form id="auth-form" class="space-y-4">
           <div>
-            <label class="block text-sm text-slate-400 mb-1.5">Email</label>
+            <label class="block text-xs text-slate-400 mb-1.5 font-medium">Email</label>
             <input
               id="auth-email"
               type="email"
               required
-              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              class="lf-input"
               placeholder="you@example.com"
             />
           </div>
-          
+
           <div>
-            <label class="block text-sm text-slate-400 mb-1.5">Password</label>
+            <label class="block text-xs text-slate-400 mb-1.5 font-medium">Password</label>
             <input
               id="auth-password"
               type="password"
               required
               minlength="6"
-              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              class="lf-input"
               placeholder="••••••••"
             />
           </div>
-          
+
           <p id="auth-error" class="text-sm text-red-400 hidden"></p>
-          
+
           <button
             id="auth-submit-btn"
             type="submit"
-            class="w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded-xl transition-all text-base"
+            class="lf-btn lf-btn-primary w-full py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-base"
           >
             Sign In
           </button>
         </form>
-        
-        <p class="text-center text-sm text-slate-400 mt-4">
+
+        <p class="text-center text-sm text-slate-400 mt-5">
           <span id="auth-toggle-text">Don't have an account?</span>
-          <button id="auth-toggle-btn" type="button" class="text-emerald-400 hover:text-emerald-300 font-medium ml-1">
+          <button id="auth-toggle-btn" type="button" class="text-emerald-400 hover:text-emerald-300 font-semibold ml-1">
             Sign Up
           </button>
         </p>
@@ -104,25 +90,25 @@
     </div>
 
     <!-- Settings Modal -->
-    <div id="settings-modal" class="fixed inset-0 z-40 bg-slate-950/80 flex items-center justify-center hidden">
-      <div class="bg-slate-850 border border-slate-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
+    <div id="settings-modal" class="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+      <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-sm">
         <h2 class="text-lg font-bold text-white mb-4">Settings</h2>
-        
-        <div class="mb-4">
+
+        <div class="mb-5 p-3 rounded-xl bg-slate-950/40 border border-white/5">
           <label class="block text-xs text-slate-500 mb-1">Logged in as</label>
-          <p id="settings-user-email" class="text-sm text-slate-300 truncate"></p>
+          <p id="settings-user-email" class="text-sm text-slate-200 truncate"></p>
         </div>
-        
+
         <div class="flex gap-3">
           <button
             id="settings-close-btn"
-            class="flex-1 py-2 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-lg transition-colors"
+            class="lf-btn lf-btn-ghost flex-1 py-2.5 text-white font-medium"
           >
             Close
           </button>
           <button
             id="logout-btn"
-            class="flex-1 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 font-medium rounded-lg transition-colors border border-red-500/30"
+            class="lf-btn flex-1 py-2.5 bg-red-500/15 hover:bg-red-500/25 text-red-400 font-medium border border-red-500/30"
           >
             Logout
           </button>
@@ -130,20 +116,23 @@
       </div>
     </div>
 
-    <div id="app" class="max-w-3xl mx-auto px-4 py-6">
+    <div id="app" class="max-w-3xl mx-auto px-4 py-8">
       <!-- Header -->
       <header class="flex items-center justify-between mb-8">
         <div class="flex items-center gap-3">
-          <div class="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-slate-900">
+          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center font-extrabold text-slate-900 shadow-lg shadow-emerald-500/25">
             L
           </div>
-          <h1 class="text-2xl font-bold text-white">LoadForm</h1>
+          <div>
+            <h1 class="text-xl font-bold text-white leading-none">LoadForm</h1>
+            <span class="text-[11px] text-slate-500">AI load capture</span>
+          </div>
         </div>
-        <div class="flex items-center gap-3">
-          <span id="status-badge" class="text-xs px-2 py-1 rounded bg-slate-700 text-slate-400 hidden">Ready</span>
+        <div class="flex items-center gap-2.5">
+          <span id="status-badge" class="lf-pill text-xs px-2.5 py-1 rounded-full text-slate-400 hidden">Ready</span>
           <button
             id="settings-btn"
-            class="text-sm px-3 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+            class="lf-icon-btn w-9 h-9 rounded-xl text-slate-300 flex items-center justify-center text-base"
             title="Settings"
           >
             ⚙️
@@ -153,61 +142,63 @@
 
       <!-- Capture Section -->
       <section id="capture-section" class="mb-6">
-        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
-          <h2 class="text-lg font-semibold mb-4 text-white">🎙️ Audio Capture</h2>
+        <div class="glass glass-lit rounded-2xl p-6">
+          <div class="flex items-center gap-2 mb-5">
+            <span class="text-base">🎙️</span>
+            <h2 class="text-lg font-semibold text-white">Audio Capture</h2>
+          </div>
 
           <!-- Device Selector -->
           <div class="mb-4">
-            <label class="block text-xs text-slate-400 mb-1.5">Audio Source</label>
-            <select
-              id="device-select"
-              class="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500 transition-colors"
-            >
+            <label class="block text-xs text-slate-400 mb-1.5 font-medium">Audio Source</label>
+            <select id="device-select" class="lf-select">
               <option value="" disabled selected>Loading devices...</option>
             </select>
-            <p id="device-hint" class="text-xs text-slate-500 mt-1 hidden"></p>
+            <p id="device-hint" class="text-xs text-slate-500 mt-2 hidden"></p>
           </div>
 
           <!-- Mix System Audio (Pro feature) -->
           <div id="mix-system-row" class="mb-4 hidden">
-            <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer">
-              <input
-                id="mix-system-checkbox"
-                type="checkbox"
-                class="w-4 h-4 rounded border-slate-600 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
-              />
-              <span>Mix System Audio (both mic + system)</span>
-              <span class="text-xs bg-amber-500/20 text-amber-400 px-1.5 py-0.5 rounded">PRO</span>
+            <label class="lf-toggle-row" for="mix-system-checkbox">
+              <span class="lf-toggle-text">
+                <span>Mix System Audio<span class="lf-pro-badge">PRO</span></span>
+                <span class="lf-toggle-sub">Capture mic + system audio together</span>
+              </span>
+              <span class="lf-toggle-switch">
+                <input id="mix-system-checkbox" type="checkbox" />
+                <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
+              </span>
             </label>
           </div>
 
           <!-- Capture Controls -->
-          <div class="flex items-center gap-4 mb-2">
+          <div class="flex items-center gap-4 mb-3">
             <button
               id="start-capture-btn"
-              class="flex items-center gap-2 px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded-xl transition-all text-base"
+              class="lf-btn lf-btn-primary flex items-center gap-2 px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-base"
             >
               <span id="capture-icon">🎙️</span>
               <span id="capture-btn-text">Start Capture</span>
             </button>
 
             <div id="capturing-indicator" class="hidden flex items-center gap-2">
-              <span class="w-3 h-3 bg-red-500 rounded-full pulse-dot"></span>
+              <span class="w-2.5 h-2.5 bg-red-500 rounded-full pulse-dot"></span>
               <span class="text-sm text-red-400 font-medium">Listening...</span>
             </div>
           </div>
 
           <!-- Auto-extract toggle -->
-          <div class="flex items-center gap-2 mb-2">
-            <input
-              id="auto-extract-checkbox"
-              type="checkbox"
-              class="w-4 h-4 rounded border-slate-600 bg-slate-900 text-emerald-500 focus:ring-emerald-500"
-            />
-            <label for="auto-extract-checkbox" class="text-sm text-slate-300 cursor-pointer">
-              Auto-fill form as broker speaks
+          <div class="mb-2">
+            <label class="lf-toggle-row" for="auto-extract-checkbox">
+              <span class="lf-toggle-text">
+                <span>Auto-fill form as broker speaks</span>
+                <span class="lf-toggle-sub">Triggers on conversation pauses</span>
+              </span>
+              <span class="lf-toggle-switch">
+                <input id="auto-extract-checkbox" type="checkbox" />
+                <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
+              </span>
             </label>
-            <span class="text-xs text-slate-500">(on conversation pauses)</span>
           </div>
 
           <!-- Audio Level Meters (per-source dev visualization) -->
@@ -216,9 +207,9 @@
           </div>
 
           <!-- Live Transcript -->
-          <div id="transcript-area" class="mt-4 p-3 bg-slate-900 rounded-lg min-h-[80px] border border-slate-700 hidden">
-            <div class="flex items-center justify-between mb-1">
-              <span class="text-xs text-slate-500">Live Transcript:</span>
+          <div id="transcript-area" class="mt-4 p-4 rounded-xl bg-slate-950/40 border border-white/5 min-h-[80px] hidden">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-xs text-slate-500 font-medium">Live Transcript</span>
               <span id="capture-status" class="text-xs font-medium text-slate-400">Listening...</span>
             </div>
             <div id="live-transcript" class="text-sm text-slate-300 leading-relaxed"></div>
@@ -229,17 +220,20 @@
 
       <!-- Extract Section -->
       <section id="extract-section" class="mb-6 hidden">
-        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
+        <div class="glass glass-lit rounded-2xl p-6">
           <div class="flex items-center justify-between mb-4">
-            <h2 class="text-lg font-semibold text-white">✨ Extract Load Details</h2>
+            <div class="flex items-center gap-2">
+              <span class="text-base">✨</span>
+              <h2 class="text-lg font-semibold text-white">Extract Load Details</h2>
+            </div>
             <span id="extraction-status" class="text-xs text-slate-400 hidden">Processing...</span>
           </div>
 
           <button
             id="extract-btn"
-            class="w-full py-3 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl transition-all text-base mb-2"
+            class="lf-btn lf-btn-blue w-full py-3 bg-blue-500 hover:bg-blue-600 text-white text-base mb-2"
           >
-            🔄 Complete & Extract Fields
+            🔄 Complete &amp; Extract Fields
           </button>
           <div id="extraction-spinner" class="hidden flex items-center justify-center gap-2 py-3">
             <svg class="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24">
@@ -253,9 +247,12 @@
 
       <!-- Form Section -->
       <section id="form-section" class="mb-6 hidden">
-        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
-          <h2 class="text-lg font-semibold mb-4 text-white">📋 Load Details</h2>
-          <p class="text-sm text-slate-400 mb-4">Review and edit each field. Colors show confidence — edit anything that looks wrong.</p>
+        <div class="glass glass-lit rounded-2xl p-6">
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-base">📋</span>
+            <h2 class="text-lg font-semibold text-white">Load Details</h2>
+          </div>
+          <p class="text-sm text-slate-400 mb-4">Review and edit each field. Border colors show confidence — edit anything that looks wrong.</p>
 
           <div id="fields-container" class="space-y-3">
             <!-- Fields injected by JS -->
@@ -265,23 +262,26 @@
 
       <!-- Output Section -->
       <section id="output-section" class="mb-6 hidden">
-        <div class="bg-slate-850 border border-slate-700 rounded-xl p-6">
-          <h2 class="text-lg font-semibold mb-4 text-white">📤 Output for Driver</h2>
+        <div class="glass glass-lit rounded-2xl p-6">
+          <div class="flex items-center gap-2 mb-4">
+            <span class="text-base">📤</span>
+            <h2 class="text-lg font-semibold text-white">Output for Driver</h2>
+          </div>
 
-          <div class="bg-slate-900 border border-slate-600 rounded-lg p-4 mb-4 font-mono text-sm text-slate-300 whitespace-pre-wrap" id="output-preview">
+          <div class="lf-code p-4 mb-4 text-sm text-slate-300 whitespace-pre-wrap" id="output-preview">
             <!-- Preview injected by JS -->
           </div>
 
           <div class="flex gap-3">
             <button
               id="copy-btn"
-              class="flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-bold rounded-xl transition-all text-base"
+              class="lf-btn lf-btn-primary flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-base"
             >
               📋 Copy to Clipboard
             </button>
             <button
               id="new-load-btn"
-              class="px-6 py-3 bg-slate-700 hover:bg-slate-600 text-white font-medium rounded-xl transition-all text-base"
+              class="lf-btn lf-btn-ghost px-6 py-3 text-white font-medium text-base"
             >
               🔄 New Load
             </button>

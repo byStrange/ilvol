@@ -217,7 +217,7 @@ function ensureMeter(source) {
   label.textContent = meterLabel(source);
 
   const barsRow = document.createElement('div');
-  barsRow.className = 'flex items-end gap-[2px] h-10 bg-slate-900 rounded-lg px-2 py-1 border border-slate-700';
+  barsRow.className = 'lf-meter-row';
 
   const bars = [];
   const smoothed = [];
@@ -477,10 +477,10 @@ function renderForm(data, confidence) {
     const reviewFlag = needsReview(conf) ? ' ⚠️' : '';
 
     const fieldEl = document.createElement('div');
-    fieldEl.className = 'fade-in';
+    fieldEl.className = 'fade-in p-3 rounded-xl bg-slate-950/30 border border-white/5';
     fieldEl.innerHTML = `
       <div class="flex items-center justify-between mb-1.5">
-        <label class="text-sm font-medium text-slate-300" for="field-${field.key}">
+        <label class="text-sm font-medium text-slate-200" for="field-${field.key}">
           ${field.label}${reviewFlag}
         </label>
         <span class="text-xs px-2 py-0.5 rounded-full font-mono ${badgeColor}">
@@ -492,7 +492,7 @@ function renderForm(data, confidence) {
         data-field="${field.key}"
         value="${escapeHtml(value)}"
         placeholder="${field.placeholder}"
-        class="w-full bg-slate-900 border-2 ${borderColor} rounded-lg px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+        class="lf-input border-2 ${borderColor}"
       />
     `;
 
