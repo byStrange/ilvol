@@ -14,6 +14,14 @@ import {
   needsReview,
 } from './templates.js';
 import { createClient } from '@supabase/supabase-js';
+import {
+  saveLoad,
+  fetchLoads,
+  fetchLoad,
+  setLoadStatus,
+  deleteLoad,
+  loadToDriverText,
+} from './loads.js';
 
 // ─── Supabase Config ───────────────────────────────────────────────────────
 // Production: https://supabase.com/dashboard/project/tusiipxekbfheihjrjbd
@@ -41,6 +49,14 @@ let selectedDeviceId = '';
 let autoExtractEnabled = false;
 let lastExtractTime = 0;
 const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
+
+// ─── Load History State ─────────────────────────────────────────────────────
+
+let currentLoadId = null; // DB id of the load currently being edited (null = new/unsaved)
+let loadsList = []; // cached history rows for the panel
+let showCompleted = false; // history panel filter
+let editSaveTimer = null; // debounced autosave-on-edit timer
+const EDIT_SAVE_DEBOUNCE_MS = 1200;
 
 // ─── Auth State ─────────────────────────────────────────────────────────────
 
@@ -89,6 +105,13 @@ const els = {
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
   logoutBtn: document.getElementById('logout-btn'),
+  // Load history elements
+  historyBtn: document.getElementById('history-btn'),
+  historyPanel: document.getElementById('history-panel'),
+  historyList: document.getElementById('history-list'),
+  historyEmpty: document.getElementById('history-empty'),
+  historyCount: document.getElementById('history-count'),
+  historyShowCompleted: document.getElementById('history-show-completed'),
 };
 
 // ─── Field Definitions ────────────────────────────────────────────────────
@@ -280,6 +303,7 @@ async function startCapture() {
   accumulatedTranscript = '';
   currentExtractedData = null;
   currentConfidence = {};
+  currentLoadId = null; // a new capture session starts a fresh load
   els.liveTranscript.textContent = '';
   els.interimTranscript.textContent = '';
   els.fieldsContainer.innerHTML = '';
@@ -430,6 +454,9 @@ async function performExtract(showSpinner = true) {
 
     renderOutput();
     setCaptureStatus('Fields updated', 'text-emerald-400');
+
+    // Persist the extracted load (insert on first save, update thereafter).
+    await saveCurrentLoad();
   } catch (err) {
     console.error('Auto-extract failed:', err);
     setCaptureStatus('Extract failed', 'text-red-400');
@@ -503,6 +530,7 @@ function renderForm(data, confidence) {
     input.addEventListener('input', () => {
       currentExtractedData[input.dataset.field] = input.value;
       renderOutput();
+      scheduleEditSave();
     });
   });
 }
@@ -527,7 +555,17 @@ async function copyToClipboard() {
   if (!currentExtractedData) return;
 
   const text = renderTemplate(DEFAULT_TEMPLATE, currentExtractedData);
+  const ok = await writeTextToClipboard(text);
 
+  if (ok) {
+    els.copyFeedback.classList.remove('hidden');
+    setTimeout(() => els.copyFeedback.classList.add('hidden'), 2000);
+  }
+}
+
+// Reusable clipboard writer used by both the output "Copy" button and the
+// history panel "Copy driver data" action. Returns true on success.
+async function writeTextToClipboard(text) {
   try {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
       await navigator.clipboard.writeText(text);
@@ -541,16 +579,25 @@ async function copyToClipboard() {
       document.execCommand('copy');
       document.body.removeChild(textarea);
     }
-
-    els.copyFeedback.classList.remove('hidden');
-    setTimeout(() => els.copyFeedback.classList.add('hidden'), 2000);
+    return true;
   } catch (err) {
     console.error('Failed to copy:', err);
     alert('Failed to copy: ' + err);
+    return false;
   }
 }
 
 // ─── Reset ──────────────────────────────────────────────────────────────────
+
+// "New Load": persist any final edits to the current load, then start fresh.
+async function handleNewLoad() {
+  if (currentExtractedData && currentUser) {
+    await saveCurrentLoad();
+  }
+  currentLoadId = null;
+  resetForm();
+  refreshLoadsList();
+}
 
 function resetForm() {
   accumulatedTranscript = '';
@@ -574,7 +621,211 @@ function resetForm() {
   setCapturingUI(false);
 }
 
-// ─── Auth Flow ───────────────────────────────────────────────────────────────
+// ─── Load History ────────────────────────────────────────────────────────────
+
+// Persist the current in-memory load to Supabase. Inserts a new row when there
+// is no currentLoadId (first save), otherwise updates the existing row.
+// Never throws — a save failure is logged but does not block the UI.
+async function saveCurrentLoad() {
+  if (!currentUser || !currentExtractedData) return;
+  const { id } = await saveLoad(
+    supabase,
+    currentUser.id,
+    currentLoadId,
+    currentExtractedData,
+    currentConfidence,
+    accumulatedTranscript
+  );
+  if (id && !currentLoadId) {
+    currentLoadId = id;
+  }
+  refreshLoadsList();
+}
+
+// Debounced autosave triggered by form field edits.
+function scheduleEditSave() {
+  if (!currentLoadId || !currentUser) return; // only update existing rows on edit
+  clearTimeout(editSaveTimer);
+  editSaveTimer = setTimeout(() => {
+    editSaveTimer = null;
+    saveCurrentLoad();
+  }, EDIT_SAVE_DEBOUNCE_MS);
+}
+
+// Reload the user's loads from Supabase and re-render the panel.
+async function refreshLoadsList() {
+  if (!currentUser) {
+    loadsList = [];
+    renderLoadsList();
+    return;
+  }
+  loadsList = await fetchLoads(supabase);
+  renderLoadsList();
+}
+
+// Format a created_at timestamp into a short relative-ish label.
+function formatLoadDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) {
+    return d.toLocaleString('en-US', { hour: 'numeric', minute: '2-digit' });
+  }
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function renderLoadsList() {
+  if (!els.historyList) return;
+
+  const visible = showCompleted
+    ? loadsList
+    : loadsList.filter((l) => l.status !== 'completed');
+
+  els.historyCount.textContent = loadsList.length
+    ? `${loadsList.length} saved`
+    : '';
+
+  els.historyList.innerHTML = '';
+
+  if (loadsList.length === 0) {
+    els.historyEmpty.classList.remove('hidden');
+    els.historyList.classList.add('hidden');
+    return;
+  }
+  els.historyEmpty.classList.add('hidden');
+  els.historyList.classList.remove('hidden');
+
+  if (visible.length === 0) {
+    const note = document.createElement('p');
+    note.className = 'text-sm text-slate-500 text-center py-6';
+    note.textContent = 'No active loads. Toggle "Show completed" to see finished loads.';
+    els.historyList.appendChild(note);
+    return;
+  }
+
+  for (const load of visible) {
+    const isCurrent = load.id === currentLoadId;
+    const isDone = load.status === 'completed';
+
+    const route =
+      load.pickup_location || load.delivery_location
+        ? `${load.pickup_location || '—'} → ${load.delivery_location || '—'}`
+        : '';
+    const meta = [route, load.rate, formatLoadDate(load.created_at)]
+      .filter(Boolean)
+      .join('  ·  ');
+
+    const item = document.createElement('div');
+    item.className = 'lf-load-item fade-in' + (isCurrent ? ' is-current' : '');
+    item.innerHTML = `
+      <div class="lf-load-meta">
+        <div class="lf-load-title">${escapeHtml(load.title || 'Untitled load')}</div>
+        <div class="lf-load-sub">${escapeHtml(meta)}</div>
+      </div>
+      <div class="lf-load-actions">
+        <span class="lf-pill text-xs px-2 py-0.5 rounded-full ${isDone ? 'lf-status-done' : 'lf-status-active'}">
+          ${isDone ? '✓ Done' : 'Active'}
+        </span>
+        <button class="lf-load-act" data-load-id="${load.id}" data-action="copy" title="Copy driver data">📋</button>
+        <button class="lf-load-act" data-load-id="${load.id}" data-action="toggle" title="${isDone ? 'Reactivate' : 'Mark complete'}">${isDone ? '↩️' : '✓'}</button>
+        <button class="lf-load-act" data-load-id="${load.id}" data-action="delete" title="Delete">🗑</button>
+        <button class="lf-load-act" data-load-id="${load.id}" data-action="open" title="Open load">Open</button>
+      </div>
+    `;
+    els.historyList.appendChild(item);
+  }
+}
+
+// Open a saved load into the form/output for review or further editing.
+async function openLoad(id) {
+  const load = await fetchLoad(supabase, id);
+  if (!load) return;
+
+  currentLoadId = load.id;
+  currentExtractedData = {};
+  for (const key of [
+    'pickup_location', 'pickup_datetime', 'pickup_type', 'pickup_window',
+    'delivery_location', 'delivery_datetime', 'delivery_type', 'delivery_window',
+    'stops', 'commodity', 'equipment_type', 'trailer_instructions',
+    'rate', 'weight', 'additional_notes',
+  ]) {
+    currentExtractedData[key] = load[key] || '';
+  }
+  currentConfidence = load.confidence || {};
+  accumulatedTranscript = load.transcript || '';
+
+  renderForm(currentExtractedData, currentConfidence);
+  els.formSection.classList.remove('hidden');
+  renderOutput();
+
+  toggleHistoryPanel(false);
+  els.formSection.scrollIntoView({ behavior: 'smooth' });
+  renderLoadsList();
+}
+
+// Copy a saved load's driver-facing text straight from the history list.
+async function copyLoadDriverData(id) {
+  const load = await fetchLoad(supabase, id);
+  if (!load) return;
+  const text = loadToDriverText(load);
+  const ok = await writeTextToClipboard(text);
+  if (ok) {
+    setCaptureStatus('Driver data copied', 'text-emerald-400');
+  }
+}
+
+// Mark a load complete or reactivate it.
+async function toggleLoadStatus(id) {
+  const load = loadsList.find((l) => l.id === id);
+  const next = load && load.status === 'completed' ? 'active' : 'completed';
+  await setLoadStatus(supabase, id, next);
+  await refreshLoadsList();
+}
+
+// Delete a load (with confirm). If it's the currently-open one, reset the form.
+async function removeLoad(id) {
+  if (!confirm('Delete this load? This cannot be undone.')) return;
+  const ok = await deleteLoad(supabase, id);
+  if (!ok) return;
+  if (id === currentLoadId) {
+    currentLoadId = null;
+    resetForm();
+  }
+  await refreshLoadsList();
+}
+
+// Handle clicks anywhere in the history list via delegation.
+function onHistoryListClick(e) {
+  const btn = e.target.closest('[data-action]');
+  if (!btn) return;
+  const id = btn.dataset.loadId;
+  const action = btn.dataset.action;
+  switch (action) {
+    case 'open':
+      openLoad(id);
+      break;
+    case 'copy':
+      copyLoadDriverData(id);
+      break;
+    case 'toggle':
+      toggleLoadStatus(id);
+      break;
+    case 'delete':
+      removeLoad(id);
+      break;
+  }
+}
+
+function toggleHistoryPanel(show) {
+  if (show === undefined) {
+    els.historyPanel.classList.toggle('hidden');
+  } else if (show) {
+    els.historyPanel.classList.remove('hidden');
+  } else {
+    els.historyPanel.classList.add('hidden');
+  }
+}
 
 function initAuth() {
   // Check for existing session
@@ -586,6 +837,7 @@ function initAuth() {
         currentUser = session.user;
         hideAuthModal();
         fetchAndSetApiKeys();
+        refreshLoadsList();
       } else {
         // Token invalid/expired
         localStorage.removeItem('sb-auth-token');
@@ -678,6 +930,7 @@ async function handleAuthSubmit(e) {
       localStorage.setItem('sb-auth-token', session.access_token);
       currentUser = session.user;
       await fetchAndSetApiKeys();
+      refreshLoadsList();
       hideAuthModal();
       els.authForm.reset();
     } else {
@@ -727,6 +980,9 @@ async function handleLogout() {
   }
   localStorage.removeItem('sb-auth-token');
   currentUser = null;
+  currentLoadId = null;
+  loadsList = [];
+  renderLoadsList();
   hideSettingsModal();
   showAuthModal();
   try {
@@ -746,7 +1002,7 @@ window.addEventListener('DOMContentLoaded', () => {
   els.startCaptureBtn.addEventListener('click', toggleCapture);
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
-  els.newLoadBtn.addEventListener('click', resetForm);
+  els.newLoadBtn.addEventListener('click', handleNewLoad);
 
   // Auto-extract toggle
   if (els.autoExtractCheckbox) {
@@ -766,6 +1022,19 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsBtn.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
+
+  // Load history listeners
+  els.historyBtn.addEventListener('click', () => {
+    toggleHistoryPanel();
+    if (!els.historyPanel.classList.contains('hidden')) {
+      refreshLoadsList();
+    }
+  });
+  els.historyShowCompleted.addEventListener('change', (e) => {
+    showCompleted = e.target.checked;
+    renderLoadsList();
+  });
+  els.historyList.addEventListener('click', onHistoryListClick);
 
   // Close settings modal on backdrop click
   els.settingsModal.addEventListener('click', (e) => {
