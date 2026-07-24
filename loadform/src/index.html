@@ -131,6 +131,13 @@
         <div class="flex items-center gap-2.5">
           <span id="status-badge" class="lf-pill text-xs px-2.5 py-1 rounded-full text-slate-400 hidden">Ready</span>
           <button
+            id="history-btn"
+            class="lf-icon-btn h-9 rounded-xl text-slate-200 flex items-center justify-center gap-1.5 px-3 text-sm font-medium"
+            title="Load history"
+          >
+            🗂 <span class="hidden sm:inline">History</span>
+          </button>
+          <button
             id="settings-btn"
             class="lf-icon-btn w-9 h-9 rounded-xl text-slate-300 flex items-center justify-center text-base"
             title="Settings"
@@ -139,6 +146,34 @@
           </button>
         </div>
       </header>
+
+      <!-- Load History Panel -->
+      <section id="history-panel" class="mb-6 hidden">
+        <div class="glass glass-lit rounded-2xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div class="flex items-center gap-2">
+              <span class="text-base">🗂</span>
+              <h2 class="text-lg font-semibold text-white">Load History</h2>
+              <span id="history-count" class="lf-pill text-xs px-2 py-0.5 rounded-full text-slate-400"></span>
+            </div>
+            <label class="flex items-center gap-2 cursor-pointer select-none" for="history-show-completed">
+              <span class="text-xs text-slate-400">Show completed</span>
+              <span class="lf-toggle-switch">
+                <input id="history-show-completed" type="checkbox" />
+                <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
+              </span>
+            </label>
+          </div>
+
+          <div id="history-list" class="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
+            <!-- Load rows injected by JS -->
+          </div>
+
+          <p id="history-empty" class="text-sm text-slate-500 text-center py-8">
+            No saved loads yet. Capture a broker call and extract to start your history.
+          </p>
+        </div>
+      </section>
 
       <!-- Capture Section -->
       <section id="capture-section" class="mb-6">
