@@ -40,6 +40,17 @@
         0%, 100% { opacity: 1; }
         50% { opacity: 0.4; }
       }
+      /* Minimalistic per-source soundwave meters */
+      .meter-bar {
+        width: 4px;
+        min-height: 2px;
+        background: linear-gradient(to top, #059669, #34d399);
+        border-radius: 2px;
+        transition: height 70ms linear;
+      }
+      .meter-bar.system {
+        background: linear-gradient(to top, #2563eb, #60a5fa);
+      }
     </style>
   </head>
   <body class="min-h-screen bg-slate-900 text-slate-200 antialiased">
@@ -197,6 +208,11 @@
               Auto-fill form as broker speaks
             </label>
             <span class="text-xs text-slate-500">(on conversation pauses)</span>
+          </div>
+
+          <!-- Audio Level Meters (per-source dev visualization) -->
+          <div id="meter-container" class="mt-4 space-y-3 hidden">
+            <!-- per-source bar meters injected by JS -->
           </div>
 
           <!-- Live Transcript -->
