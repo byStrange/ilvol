@@ -62,6 +62,7 @@ const els = {
   deviceHint: document.getElementById('device-hint'),
   mixSystemRow: document.getElementById('mix-system-row'),
   mixSystemCheckbox: document.getElementById('mix-system-checkbox'),
+  meterContainer: document.getElementById('meter-container'),
   extractSection: document.getElementById('extract-section'),
   extractBtn: document.getElementById('extract-btn'),
   extractionSpinner: document.getElementById('extraction-spinner'),
@@ -191,6 +192,75 @@ function onDeviceChange() {
   }
 }
 
+// ─── Audio Level Meters (per-source dev visualization) ─────────────────────
+//
+// The Rust backend emits `audio:level` ~30×/s per active source with a compact
+// bar array (0..1). We render one minimalistic bar meter per source so you can
+// see at a glance which inputs are actually picking up sound — mic and system
+// audio are shown separately, including when both are mixed.
+
+const METER_BARS = 24;
+const meterState = {}; // source -> { wrap, bars: [HTMLElement], smoothed: [number] }
+
+function meterLabel(source) {
+  return source === 'mic' ? '🎤 Microphone' : '🔊 System Audio';
+}
+
+function ensureMeter(source) {
+  if (meterState[source]) return meterState[source];
+
+  const wrap = document.createElement('div');
+  wrap.className = 'meter-source';
+
+  const label = document.createElement('div');
+  label.className = 'text-xs text-slate-500 mb-1';
+  label.textContent = meterLabel(source);
+
+  const barsRow = document.createElement('div');
+  barsRow.className = 'flex items-end gap-[2px] h-10 bg-slate-900 rounded-lg px-2 py-1 border border-slate-700';
+
+  const bars = [];
+  const smoothed = [];
+  for (let i = 0; i < METER_BARS; i++) {
+    const bar = document.createElement('div');
+    bar.className = 'meter-bar' + (source === 'system' ? ' system' : '');
+    bar.style.height = '2px';
+    barsRow.appendChild(bar);
+    bars.push(bar);
+    smoothed.push(0);
+  }
+
+  wrap.appendChild(label);
+  wrap.appendChild(barsRow);
+  els.meterContainer.appendChild(wrap);
+
+  const state = { wrap, bars, smoothed };
+  meterState[source] = state;
+  return state;
+}
+
+function onAudioLevel(payload) {
+  const source = payload?.source;
+  const bars = payload?.bars;
+  if (!source || !Array.isArray(bars)) return;
+
+  const state = ensureMeter(source);
+  for (let i = 0; i < state.bars.length; i++) {
+    const target = Number(bars[i]) || 0;
+    // Peak-decay smoothing: rise instantly, fall gradually so the wave looks
+    // alive rather than twitchy.
+    const prev = state.smoothed[i];
+    const next = target > prev ? target : prev * 0.82;
+    state.smoothed[i] = next;
+    state.bars[i].style.height = `${Math.max(2, next * 100)}%`;
+  }
+}
+
+function resetMeters() {
+  if (els.meterContainer) els.meterContainer.innerHTML = '';
+  for (const key of Object.keys(meterState)) delete meterState[key];
+}
+
 // ─── Capture Flow ───────────────────────────────────────────────────────────
 
 async function toggleCapture() {
@@ -227,6 +297,8 @@ async function startCapture() {
     await tauriInvoke('start_capture_cmd', options);
     isCapturing = true;
     setCapturingUI(true);
+    resetMeters();
+    els.meterContainer.classList.remove('hidden');
   } catch (err) {
     console.error('Failed to start capture:', err);
     alert('Failed to start capture: ' + err);
@@ -241,6 +313,8 @@ async function stopCapture() {
     isCapturing = false;
     setCapturingUI(false);
     setCaptureStatus('', 'text-slate-400');
+    els.meterContainer.classList.add('hidden');
+    resetMeters();
 
     // Show extract section for manual trigger, but form is already visible
     els.extractSection.classList.remove('hidden');
@@ -494,6 +568,9 @@ function resetForm() {
   els.outputPreview.textContent = '';
   setCaptureStatus('', 'text-slate-400');
 
+  els.meterContainer.classList.add('hidden');
+  resetMeters();
+
   setCapturingUI(false);
 }
 
@@ -703,6 +780,9 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     window.__TAURI__.event.listen('transcript:complete', (event) => {
       onTranscriptComplete(event);
+    });
+    window.__TAURI__.event.listen('audio:level', (event) => {
+      onAudioLevel(event.payload);
     });
   }
 });
