@@ -33,9 +33,7 @@
       "icons/icon.ico"
     ],
     "macOS": {
-      "infoPlist": {
-        "NSMicrophoneUsageDescription": "LoadForm needs microphone access to capture audio for live transcription."
-      }
+      "infoPlist": "Info.plist"
     }
   }
 }
