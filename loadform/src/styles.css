@@ -17,15 +17,24 @@ html {
 }
 
 body {
-  background-color: #0b1120;
-  color: #e2e8f0;
+  background-color: oklch(0.16 0.006 240);
+  color: oklch(0.97 0.005 240);
   font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
     Roboto, Helvetica, Arial, sans-serif;
   background-image:
-    radial-gradient(900px 600px at 12% -8%, rgba(16, 185, 129, 0.12), transparent 60%),
-    radial-gradient(800px 600px at 100% 0%, rgba(59, 130, 246, 0.12), transparent 55%),
-    radial-gradient(700px 500px at 50% 120%, rgba(99, 102, 241, 0.10), transparent 60%);
+    radial-gradient(900px 600px at 12% -8%, rgba(16, 185, 129, 0.10), transparent 60%),
+    radial-gradient(800px 600px at 100% 0%, rgba(16, 185, 129, 0.06), transparent 55%);
   background-attachment: fixed;
+}
+
+:root {
+  --lf-primary: #10b981;
+  --lf-primary-foreground: #052e1f;
+  --lf-border: rgba(255, 255, 255, 0.08);
+  --lf-card: rgba(30, 41, 59, 0.55);
+  --lf-secondary: rgba(51, 65, 85, 0.55);
+  --lf-muted-foreground: #94a3b8;
+  --lf-foreground: #f8fafc;
 }
 
 /* ─── Glass surfaces ───────────────────────────────────────────────────── */
@@ -65,6 +74,607 @@ body {
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   pointer-events: none;
+}
+
+/* ─── Voice orb ────────────────────────────────────────────────────────── */
+
+.lf-orb {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 11rem;
+  height: 11rem;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  outline: none;
+  transition: transform 0.3s ease;
+}
+.lf-orb:active {
+  transform: scale(0.97);
+}
+.lf-orb-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.22);
+  filter: blur(40px);
+  opacity: 0.4;
+  transition: opacity 0.7s ease;
+}
+.lf-orb:hover .lf-orb-glow {
+  opacity: 0.6;
+}
+.lf-orb.is-listening .lf-orb-glow {
+  opacity: 1;
+}
+.lf-orb-ring {
+  position: absolute;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  transition: transform 1s ease, opacity 0.6s ease;
+}
+.lf-orb-ring-1 { inset: 0.5rem; }
+.lf-orb-ring-2 { inset: 0; border-color: rgba(16, 185, 129, 0.2); }
+.lf-orb.is-listening .lf-orb-ring-1 {
+  transform: scale(1.1);
+  opacity: 0.7;
+}
+.lf-orb.is-listening .lf-orb-ring-2 {
+  animation: lf-ping 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+.lf-orb-core {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 9rem;
+  height: 9rem;
+  border-radius: 999px;
+  background: linear-gradient(to bottom, var(--lf-secondary), var(--lf-card));
+  box-shadow: 0 20px 50px -12px rgba(16, 185, 129, 0.25), inset 0 0 0 1px rgba(255,255,255,0.08);
+  transition: transform 0.5s ease;
+}
+.lf-orb:not(.is-listening):not(.is-processing) .lf-orb-core {
+  animation: lf-breathe 4s ease-in-out infinite;
+}
+.lf-orb.is-processing .lf-orb-core {
+  transform: scale(0.95);
+}
+.lf-orb-icon {
+  color: var(--lf-primary);
+}
+.lf-orb-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 3.5rem;
+}
+.lf-orb-bar {
+  width: 3px;
+  border-radius: 999px;
+  background: var(--lf-primary);
+  animation-name: lf-breathe;
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+}
+.lf-orb-dots {
+  display: flex;
+  gap: 6px;
+}
+.lf-orb-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--lf-primary);
+  animation: lf-breathe 0.9s ease-in-out infinite;
+}
+
+@keyframes lf-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.04); }
+}
+@keyframes lf-ping {
+  0% { transform: scale(1); opacity: 1; }
+  80%, 100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* ─── Status pill ───────────────────────────────────────────────────────── */
+
+.lf-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.5);
+  padding: 0.375rem 0.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--lf-muted-foreground);
+  backdrop-filter: blur(8px);
+}
+.lf-status-pill .lf-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--lf-muted-foreground);
+}
+.lf-status-pill.is-listening .lf-dot {
+  background: #ef4444;
+  animation: lf-pulse 1.5s infinite;
+}
+.lf-status-pill.is-listening { color: var(--lf-foreground); }
+.lf-status-pill.is-processing .lf-dot {
+  background: var(--lf-primary);
+  animation: lf-pulse 1.2s infinite;
+}
+.lf-status-pill.is-processing { color: var(--lf-foreground); }
+.lf-status-pill.is-done { color: var(--lf-primary); }
+.lf-status-pill.is-done .lf-dot { background: var(--lf-primary); }
+
+@keyframes lf-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ─── Transcript (word-in animation) ────────────────────────────────────── */
+
+.lf-transcript {
+  min-height: 92px;
+  width: 100%;
+  max-width: 28rem;
+  border-radius: 1rem;
+  border: 1px solid transparent;
+  padding: 1rem 1.25rem;
+  text-align: left;
+  transition: border-color 0.3s ease, background-color 0.3s ease;
+}
+.lf-transcript.has-text {
+  border-color: var(--lf-border);
+  background: rgba(30, 41, 59, 0.5);
+}
+.lf-transcript-text {
+  font-size: 0.94rem;
+  line-height: 1.7;
+  color: rgba(248, 250, 252, 0.85);
+}
+.lf-transcript-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1rem;
+  margin-left: 2px;
+  background: var(--lf-primary);
+  vertical-align: middle;
+  animation: lf-pulse 1s infinite;
+}
+.lf-word {
+  display: inline;
+  animation: lf-word-in 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes lf-word-in {
+  0% { opacity: 0; filter: blur(4px); transform: translateY(4px); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+/* ─── Field card ────────────────────────────────────────────────────────── */
+
+.lf-field-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  border-radius: 1rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.4);
+  padding: 0.875rem 1rem;
+  transition: border-color 0.5s ease, background-color 0.5s ease;
+}
+.lf-field-card.is-filled {
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.06);
+}
+.lf-field-card.is-review {
+  border-color: rgba(245, 158, 11, 0.4);
+}
+.lf-field-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: none;
+  border-radius: 0.75rem;
+  background: var(--lf-secondary);
+  color: var(--lf-muted-foreground);
+  transition: background-color 0.5s ease, color 0.5s ease;
+}
+.lf-field-card.is-filled .lf-field-icon {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--lf-primary);
+}
+.lf-field-body {
+  min-width: 0;
+  flex: 1;
+}
+.lf-field-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--lf-muted-foreground);
+}
+.lf-field-value {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--lf-foreground);
+  margin-top: 0.1rem;
+}
+.lf-field-value.is-placeholder {
+  font-weight: 400;
+  color: rgba(148, 163, 184, 0.55);
+}
+.lf-field-value-anim {
+  display: block;
+  animation: lf-field-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.lf-field-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--lf-foreground);
+  padding: 0;
+  margin-top: 0.1rem;
+}
+.lf-field-input::placeholder {
+  font-weight: 400;
+  color: rgba(148, 163, 184, 0.55);
+}
+.lf-field-check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: none;
+  border-radius: 999px;
+  background: var(--lf-primary);
+  color: var(--lf-primary-foreground);
+  animation: lf-check-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+.lf-field-conf {
+  font-size: 0.625rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  padding: 0.125rem 0.5rem;
+  border-radius: 999px;
+  margin-top: 0.2rem;
+  display: inline-block;
+}
+.lf-conf-high { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
+.lf-conf-med  { background: rgba(245, 158, 11, 0.2); color: #fcd34d; }
+.lf-conf-low  { background: rgba(239, 68, 68, 0.2); color: #fca5a5; }
+@keyframes lf-field-in {
+  0% { transform: translateY(10px) scale(0.98); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+@keyframes lf-check-pop {
+  0% { transform: scale(0.2); opacity: 0; }
+  60% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* ─── Driver message ────────────────────────────────────────────────────── */
+
+.lf-driver-msg {
+  border-radius: 1.5rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.6);
+  padding: 0.5rem;
+  backdrop-filter: blur(12px);
+  animation: lf-fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lf-driver-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem 0.5rem;
+}
+.lf-driver-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--lf-foreground);
+}
+.lf-driver-title-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--lf-primary);
+}
+.lf-driver-pre {
+  max-height: 18rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 1rem;
+  background: rgba(11, 17, 32, 0.6);
+  padding: 1rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  color: rgba(248, 250, 252, 0.9);
+}
+@keyframes lf-fade-up {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Layout ────────────────────────────────────────────────────────────── */
+
+.lf-app-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+  min-height: calc(100vh - 9rem); /* fill viewport minus header/footer */
+}
+@media (min-width: 1024px) {
+  .lf-app-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: 3rem;
+  }
+}
+.lf-col-capture {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding-top: 1.5rem;
+}
+.lf-col-fields {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.lf-fields-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.625rem;
+}
+@media (min-width: 640px) {
+  .lf-fields-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.lf-status-title {
+  margin-top: 2.25rem;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--lf-foreground);
+  text-wrap: balance;
+}
+.lf-status-sub {
+  margin-top: 0.5rem;
+  max-width: 20rem;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--lf-muted-foreground);
+  text-wrap: pretty;
+}
+
+/* ─── Onboarding tutorial ───────────────────────────────────────────────── */
+/*
+ * Self-contained overlay shown on demand from the Help button. Animations
+ * mirror the dispatcher-assistant reference: dim -> greeting -> intro ->
+ * shortcut -> edge -> controls. Uses fixed-position coaching cards aligned
+ * over the app real controls (voice orb + header buttons).
+ */
+
+.lf-tutorial {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh; /* mobile-safe full height */
+  overflow: hidden;
+}
+.lf-tutorial-dim {
+  position: absolute;
+  inset: 0;
+  background: rgba(11, 17, 32, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  opacity: 0;
+  transition: opacity 0.7s ease;
+}
+.lf-tutorial-dim.is-visible { opacity: 1; }
+
+.lf-tutorial-skip {
+  position: absolute;
+  right: 1.5rem;
+  top: 1.5rem;
+  z-index: 2;
+  border-radius: 999px;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.6);
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--lf-muted-foreground);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: color 0.2s ease;
+}
+.lf-tutorial-skip:hover { color: var(--lf-foreground); }
+
+/*
+ * #lf-tut-stage is the flex container itself — no nested stage divs.
+ * This is the key fix: content centers against the full viewport.
+ */
+.lf-tutorial-stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 4rem 1.5rem;
+  text-align: center;
+  gap: 0;
+}
+
+.lf-coach {
+  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lf-tutorial-title {
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--lf-foreground);
+  text-wrap: balance;
+  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lf-tutorial-title.lg { font-size: 3rem; }
+.lf-tutorial-sub {
+  margin-top: 1rem;
+  font-size: 1.0625rem;
+  line-height: 1.7;
+  color: var(--lf-muted-foreground);
+  text-wrap: pretty;
+  max-width: 32rem;
+  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: 0.4s;
+}
+.lf-tutorial-sub.sm { font-size: 0.875rem; margin-top: 0.5rem; }
+
+@keyframes lf-coach-in {
+  0% { opacity: 0; transform: translateY(10px) scale(0.96); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Keyboard shortcut keycaps */
+.lf-keycaps {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+.lf-keycap {
+  display: inline-flex;
+  min-width: 3.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.9);
+  padding: 0.75rem 1rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--lf-foreground);
+  animation: lf-keycap 0.5s ease-in-out both;
+}
+.lf-keycap-plus {
+  padding-bottom: 0.75rem;
+  font-size: 1.5rem;
+  color: var(--lf-muted-foreground);
+}
+@keyframes lf-keycap {
+  0%, 100% { transform: translateY(0); box-shadow: 0 3px 0 0 var(--lf-border); }
+  55% { transform: translateY(3px); box-shadow: 0 0 0 0 var(--lf-border); }
+}
+
+/* Coach marks row (static, flows inside the centered stage) */
+.lf-coach-row-static {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4rem;
+  flex-wrap: wrap;
+}
+.lf-coach-mark {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.lf-coach-card {
+  width: 132px;
+  margin-bottom: 0.5rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.95);
+  padding: 0.5rem 0.75rem;
+  text-align: center;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+}
+.lf-coach-card-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--lf-foreground);
+}
+.lf-coach-card-desc {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  line-height: 1.3;
+  color: var(--lf-muted-foreground);
+}
+.lf-coach-arrow {
+  width: 1.25rem;
+  height: 1.25rem;
+  color: var(--lf-primary);
+}
+
+/* Flying arrow (edge phase) */
+.lf-arrow-fly {
+  width: 2rem;
+  height: 2rem;
+  animation: lf-arrow-fly 1.6s cubic-bezier(0.5, 0, 0.2, 1) forwards;
+}
+
+.lf-tutorial-cta {
+  margin-top: 1.5rem;
+  border-radius: 999px;
+  background: var(--lf-primary);
+  color: var(--lf-primary-foreground);
+  padding: 0.75rem 1.75rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: 0.5s;
+}
+.lf-tutorial-cta:hover { transform: scale(1.03); }
+.lf-tutorial-cta:active { transform: scale(0.97); }
+
+/* Header help button (replays tutorial) */
+.lf-help-btn {
+  background: rgba(30, 41, 59, 0.5);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--lf-border);
+  color: var(--lf-muted-foreground);
+  transition: border-color 0.2s, background-color 0.2s, color 0.2s;
+}
+.lf-help-btn:hover {
+  border-color: rgba(16, 185, 129, 0.4);
+  color: var(--lf-primary);
 }
 
 /* ─── Inputs ───────────────────────────────────────────────────────────── */
