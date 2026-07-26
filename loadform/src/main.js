@@ -4,6 +4,11 @@
  * Audio capture runs in Rust (cpal/WASAPI + Deepgram websocket).
  * Frontend receives transcript chunks via Tauri events.
  * Device selection: mic, system audio, or mixed.
+ *
+ * UI design inspired by the dispatcher-assistant concept: a voice orb
+ * drives capture, a two-column grid shows the transcript on the left and
+ * animated field cards on the right, transitioning to a driver-ready
+ * message card when the load is complete.
  */
 
 import {
@@ -22,9 +27,9 @@ import {
   deleteLoad,
   loadToDriverText,
 } from './loads.js';
+import { startTutorial } from './tutorial.js';
 
 // ─── Supabase Config ───────────────────────────────────────────────────────
-// Production: https://supabase.com/dashboard/project/tusiipxekbfheihjrjbd
 const SUPABASE_URL = 'https://tusiipxekbfheihjrjbd.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR1c2lpcHhla2JmaGVpaGpyamJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MDExMTgsImV4cCI6MjA5OTA3NzExOH0.s86u7JDk0mgYqSm_NNKOQnIHKfWlizRt5xswd5vc1xI';
 
@@ -38,10 +43,52 @@ function tauriInvoke(cmd, args = {}) {
   throw new Error('Tauri runtime not available. Run inside Tauri app.');
 }
 
-// ─── State ──────────────────────────────────────────────────────────────────
+// ─── Status State Machine ─────────────────────────────────────────────────
+//
+// Mirrors the dispatcher-assistant design. `status` drives the orb, the
+// status pill, the status copy, and which right-hand view is visible
+// (field cards vs. driver message).
+//
+//   idle       → nothing captured yet
+//   listening  → capture in progress
+//   processing → extraction/AI running
+//   done       → load ready to send (driver message visible)
+//
+// Note: while listening we still show field cards (auto-extract fills
+// them in real-time). The driver message replaces them only when the
+// user stops capture and the load is "done".
+
+let status = 'idle';
+
+const STATUS_COPY = {
+  idle: {
+    title: 'Tap to capture a load',
+    sub: "Read the broker's offer out loud. I'll build the dispatch as you talk.",
+  },
+  listening: {
+    title: 'Listening…',
+    sub: 'Keep going — details lock in automatically.',
+  },
+  processing: {
+    title: 'Wrapping up',
+    sub: 'Cleaning up the details.',
+  },
+  done: {
+    title: 'Ready to send',
+    sub: 'Review the load and copy it straight to your driver.',
+  },
+};
+
+function setStatus(next) {
+  status = next;
+  renderStatus();
+}
+
+// ─── Capture State ─────────────────────────────────────────────────────────
 
 let isCapturing = false;
 let accumulatedTranscript = '';
+let transcriptWords = []; // words rendered with word-in animation
 let currentExtractedData = null;
 let currentConfidence = {};
 let devices = [];
@@ -66,28 +113,34 @@ let currentUser = null;
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
 const els = {
-  startCaptureBtn: document.getElementById('start-capture-btn'),
-  captureBtnText: document.getElementById('capture-btn-text'),
-  captureIcon: document.getElementById('capture-icon'),
-  capturingIndicator: document.getElementById('capturing-indicator'),
+  // Voice orb + status
+  voiceOrb: document.getElementById('voice-orb'),
+  orbContent: document.getElementById('orb-content'),
+  statusBadge: document.getElementById('status-badge'),
+  statusBadgeLabel: document.getElementById('status-badge-label'),
+  statusTitle: document.getElementById('status-title'),
+  statusSub: document.getElementById('status-sub'),
+  // Transcript
   transcriptArea: document.getElementById('transcript-area'),
   liveTranscript: document.getElementById('live-transcript'),
-  interimTranscript: document.getElementById('interim-transcript'),
-  captureStatus: document.getElementById('capture-status'),
+  transcriptCursor: document.getElementById('transcript-cursor'),
+  // Device + capture options
   deviceSelect: document.getElementById('device-select'),
   deviceHint: document.getElementById('device-hint'),
   mixSystemRow: document.getElementById('mix-system-row'),
   mixSystemCheckbox: document.getElementById('mix-system-checkbox'),
   meterContainer: document.getElementById('meter-container'),
+  autoExtractCheckbox: document.getElementById('auto-extract-checkbox'),
+  // Extract
   extractSection: document.getElementById('extract-section'),
   extractBtn: document.getElementById('extract-btn'),
   extractionSpinner: document.getElementById('extraction-spinner'),
-  autoExtractCheckbox: document.getElementById('auto-extract-checkbox'),
-  formSection: document.getElementById('form-section'),
+  // Fields / output
   fieldsContainer: document.getElementById('fields-container'),
   outputSection: document.getElementById('output-section'),
   outputPreview: document.getElementById('output-preview'),
   copyBtn: document.getElementById('copy-btn'),
+  copyBtnContent: document.getElementById('copy-btn-content'),
   copyFeedback: document.getElementById('copy-feedback'),
   newLoadBtn: document.getElementById('new-load-btn'),
   // Auth elements
@@ -107,6 +160,7 @@ const els = {
   logoutBtn: document.getElementById('logout-btn'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
+  helpBtn: document.getElementById('help-btn'),
   historyPanel: document.getElementById('history-panel'),
   historyList: document.getElementById('history-list'),
   historyEmpty: document.getElementById('history-empty'),
@@ -115,24 +169,117 @@ const els = {
 };
 
 // ─── Field Definitions ────────────────────────────────────────────────────
+//
+// `icon` is a key into FIELD_ICONS (inline SVG strings) so we don't depend
+// on an icon font. Labels drop the emoji prefix from the old design and use
+// the uppercase-tracking treatment from the dispatcher-assistant field cards.
+
+const FIELD_ICONS = {
+  'map-pin': '<path d="M20 10c0 4.993-5.539 10.193-7.399 11.799a1 1 0 0 1-1.202 0C9.539 20.193 4 14.993 4 10a8 8 0 0 1 16 0"/><circle cx="12" cy="10" r="3"/>',
+  flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/>',
+  calendar: '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/>',
+  'calendar-check': '<path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/>',
+  'dollar-sign': '<line x1="12" x2="12" y1="2" y2="22"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>',
+  weight: '<circle cx="12" cy="5" r="3"/><path d="M6.5 8a2 2 0 0 0-1.905 1.46L2.1 18.5A2 2 0 0 0 4 21h16a2 2 0 0 0 1.925-2.54L19.4 9.5A2 2 0 0 0 17.5 8Z"/>',
+  package: '<path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  truck: '<path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/>',
+  'sticky-note': '<path d="M15.5 3H5a2 2 0 0 0-2 2v14c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+  'package-check': '<path d="m16 16 2 2 4-4"/><path d="M21 10V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l2-1.14"/><path d="M7.5 4.27 9 5"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
+  list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+  route: '<circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/>',
+};
 
 const FIELDS = [
-  { key: 'pickup_location', label: '📍 Pickup Location', placeholder: 'e.g. Amarillo, TX' },
-  { key: 'pickup_datetime', label: '📅 Pickup Date/Time', placeholder: 'e.g. Tue 6/24, 8:00 AM' },
-  { key: 'pickup_type', label: '📥 Pickup Type', placeholder: 'e.g. Live load, Drop and hook, Preloaded' },
-  { key: 'pickup_window', label: '⏰ Pickup Window', placeholder: 'e.g. FCFS 10am-4pm, Appointment 2PM' },
-  { key: 'stops', label: '🛑 Stops', placeholder: 'e.g. Dallas, TX → Houston, TX, or None' },
-  { key: 'delivery_location', label: '📍 Delivery Location', placeholder: 'e.g. Tulsa, OK' },
-  { key: 'delivery_datetime', label: '📅 Delivery Date/Time', placeholder: 'e.g. Thu 6/26, 6:00 AM' },
-  { key: 'delivery_type', label: '📤 Delivery Type', placeholder: 'e.g. Live unload, Drop and hook, Empty out' },
-  { key: 'delivery_window', label: '⏰ Delivery Window', placeholder: 'e.g. FCFS 8am-5pm, Appointment 9AM' },
-  { key: 'commodity', label: '📦 Commodity', placeholder: 'e.g. Frozen chicken' },
-  { key: 'equipment_type', label: '🚛 Equipment Type', placeholder: 'e.g. Reefer, Dry Van' },
-  { key: 'rate', label: '💰 Rate', placeholder: 'e.g. $2.80/mile ($2,100 total)' },
-  { key: 'weight', label: '⚖️ Weight', placeholder: 'e.g. 43,000 lbs' },
-  { key: 'trailer_instructions', label: '🔗 Trailer Instructions', placeholder: 'e.g. Pick empty → live load → live unload' },
-  { key: 'additional_notes', label: '📝 Additional Notes', placeholder: 'e.g. Lumpers required' },
+  { key: 'pickup_location', label: 'Pickup Location', icon: 'map-pin', placeholder: 'e.g. Amarillo, TX' },
+  { key: 'pickup_datetime', label: 'Pickup Date/Time', icon: 'calendar', placeholder: 'e.g. Tue 6/24, 8:00 AM' },
+  { key: 'pickup_type', label: 'Pickup Type', icon: 'package', placeholder: 'e.g. Live load, Drop and hook' },
+  { key: 'pickup_window', label: 'Pickup Window', icon: 'clock', placeholder: 'e.g. FCFS 10am-4pm' },
+  { key: 'stops', label: 'Stops', icon: 'route', placeholder: 'e.g. Dallas, TX → Houston, TX' },
+  { key: 'delivery_location', label: 'Delivery Location', icon: 'flag', placeholder: 'e.g. Tulsa, OK' },
+  { key: 'delivery_datetime', label: 'Delivery Date/Time', icon: 'calendar-check', placeholder: 'e.g. Thu 6/26, 6:00 AM' },
+  { key: 'delivery_type', label: 'Delivery Type', icon: 'package-check', placeholder: 'e.g. Live unload, Drop and hook' },
+  { key: 'delivery_window', label: 'Delivery Window', icon: 'clock', placeholder: 'e.g. FCFS 8am-5pm' },
+  { key: 'commodity', label: 'Commodity', icon: 'package', placeholder: 'e.g. Frozen chicken' },
+  { key: 'equipment_type', label: 'Equipment Type', icon: 'truck', placeholder: 'e.g. Reefer, Dry Van' },
+  { key: 'rate', label: 'Rate', icon: 'dollar-sign', placeholder: 'e.g. $2.80/mile ($2,100 total)' },
+  { key: 'weight', label: 'Weight', icon: 'weight', placeholder: 'e.g. 43,000 lbs' },
+  { key: 'trailer_instructions', label: 'Trailer Instructions', icon: 'list', placeholder: 'e.g. Pick empty → live load' },
+  { key: 'additional_notes', label: 'Additional Notes', icon: 'sticky-note', placeholder: 'e.g. Lumpers required' },
 ];
+
+// ─── Status Rendering ──────────────────────────────────────────────────────
+
+const MIC_SVG = '<svg class="h-11 w-11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>';
+const ROTATE_SVG = '<svg class="h-9 w-9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>';
+
+function renderOrb() {
+  const orb = els.voiceOrb;
+  orb.classList.toggle('is-listening', status === 'listening');
+  orb.classList.toggle('is-processing', status === 'processing');
+  orb.setAttribute(
+    'aria-label',
+    status === 'listening' ? 'Stop listening' : status === 'done' ? 'Start a new load' : 'Start listening',
+  );
+
+  if (status === 'listening') {
+    // animated bars
+    const bars = 28;
+    let html = '<span class="lf-orb-bars">';
+    for (let i = 0; i < bars; i++) {
+      const scale = 0.2 + Math.abs(Math.sin(i * 1.1)) * 0.8;
+      const dur = 0.6 + (i % 5) * 0.15;
+      const delay = (i % 7) * 0.06;
+      const opacity = 0.55 + (i % 4) * 0.15;
+      html += `<span class="lf-orb-bar" style="height:100%;transform:scaleY(${scale});animation-duration:${dur}s;animation-delay:${delay}s;opacity:${opacity}"></span>`;
+    }
+    html += '</span>';
+    els.orbContent.innerHTML = html;
+    els.orbContent.classList.remove('lf-orb-icon');
+  } else if (status === 'processing') {
+    els.orbContent.classList.remove('lf-orb-icon');
+    els.orbContent.innerHTML =
+      '<span class="lf-orb-dots">' +
+      '<span class="lf-orb-dot" style="animation-delay:0s"></span>' +
+      '<span class="lf-orb-dot" style="animation-delay:0.15s"></span>' +
+      '<span class="lf-orb-dot" style="animation-delay:0.3s"></span>' +
+      '</span>';
+  } else if (status === 'done') {
+    els.orbContent.classList.add('lf-orb-icon');
+    els.orbContent.innerHTML = ROTATE_SVG;
+  } else {
+    els.orbContent.classList.add('lf-orb-icon');
+    els.orbContent.innerHTML = MIC_SVG;
+  }
+}
+
+function renderStatusPill() {
+  const map = {
+    idle: { label: 'Ready', cls: '' },
+    listening: { label: 'Recording', cls: 'is-listening' },
+    processing: { label: 'Processing', cls: 'is-processing' },
+    done: { label: 'Complete', cls: 'is-done' },
+  };
+  const s = map[status];
+  els.statusBadge.classList.remove('is-listening', 'is-processing', 'is-done');
+  if (s.cls) els.statusBadge.classList.add(s.cls);
+  els.statusBadgeLabel.textContent = s.label;
+  els.statusBadge.classList.remove('hidden');
+}
+
+function renderStatusCopy() {
+  const copy = STATUS_COPY[status];
+  els.statusTitle.textContent = copy.title;
+  els.statusSub.textContent = copy.sub;
+}
+
+function renderStatus() {
+  renderOrb();
+  renderStatusPill();
+  renderStatusCopy();
+  // transcript cursor only while listening
+  els.transcriptCursor.classList.toggle('hidden', status !== 'listening');
+}
 
 // ─── Device Management ──────────────────────────────────────────────────────
 
@@ -144,7 +291,7 @@ async function loadDevices() {
 
     // Group: Microphones
     const micGroup = document.createElement('optgroup');
-    micGroup.label = '🎤 Microphones';
+    micGroup.label = 'Microphones';
     const mics = devices.filter((d) => d.device_type === 'microphone');
     if (mics.length === 0) {
       const opt = document.createElement('option');
@@ -163,7 +310,7 @@ async function loadDevices() {
 
     // Group: System Audio
     const sysGroup = document.createElement('optgroup');
-    sysGroup.label = '🔊 System Audio';
+    sysGroup.label = 'System Audio';
     const sysDevs = devices.filter((d) => d.device_type === 'system');
     sysDevs.forEach((dev) => {
       const opt = document.createElement('option');
@@ -226,7 +373,7 @@ const METER_BARS = 24;
 const meterState = {}; // source -> { wrap, bars: [HTMLElement], smoothed: [number] }
 
 function meterLabel(source) {
-  return source === 'mic' ? '🎤 Microphone' : '🔊 System Audio';
+  return source === 'mic' ? 'Microphone' : 'System Audio';
 }
 
 function ensureMeter(source) {
@@ -300,17 +447,24 @@ async function startCapture() {
     return;
   }
 
+  // Starting a new capture from `done` resets the form first.
+  if (status === 'done') {
+    resetForm();
+  }
+
   accumulatedTranscript = '';
+  transcriptWords = [];
   currentExtractedData = null;
   currentConfidence = {};
   currentLoadId = null; // a new capture session starts a fresh load
-  els.liveTranscript.textContent = '';
-  els.interimTranscript.textContent = '';
-  els.fieldsContainer.innerHTML = '';
+  els.liveTranscript.innerHTML = '';
+  renderEmptyFieldCards(); // reset cards to empty placeholders
   els.outputPreview.textContent = '';
+  els.outputSection.classList.add('hidden');
   els.transcriptArea.classList.remove('hidden');
-  // Form and output stay visible during capture (auto-extract fills them in real-time)
-  setCaptureStatus('Listening...', 'text-red-400');
+  els.transcriptArea.classList.add('has-text');
+  isCapturing = true;
+  setStatus('listening');
 
   const options = {
     deviceId: selectedDeviceId,
@@ -319,13 +473,14 @@ async function startCapture() {
 
   try {
     await tauriInvoke('start_capture_cmd', options);
-    isCapturing = true;
-    setCapturingUI(true);
     resetMeters();
     els.meterContainer.classList.remove('hidden');
   } catch (err) {
     console.error('Failed to start capture:', err);
     alert('Failed to start capture: ' + err);
+    isCapturing = false;
+    setStatus('idle');
+    els.transcriptArea.classList.add('hidden');
   }
 }
 
@@ -334,58 +489,49 @@ async function stopCapture() {
 
   try {
     await tauriInvoke('stop_capture');
-    isCapturing = false;
-    setCapturingUI(false);
-    setCaptureStatus('', 'text-slate-400');
-    els.meterContainer.classList.add('hidden');
-    resetMeters();
-
-    // Show extract section for manual trigger, but form is already visible
-    els.extractSection.classList.remove('hidden');
-
-    // Scroll to form if it has content, otherwise scroll to extract
-    if (els.fieldsContainer.children.length > 0) {
-      els.formSection.scrollIntoView({ behavior: 'smooth' });
-    } else {
-      els.extractSection.scrollIntoView({ behavior: 'smooth' });
-    }
   } catch (err) {
     console.error('Error stopping capture:', err);
   }
-}
 
-function setCapturingUI(capturing) {
-  if (capturing) {
-    els.captureBtnText.textContent = 'Stop Capture';
-    els.captureIcon.textContent = '⏹️';
-    els.startCaptureBtn.classList.remove('bg-emerald-500', 'hover:bg-emerald-600');
-    els.startCaptureBtn.classList.add('bg-red-500', 'hover:bg-red-600');
-    els.capturingIndicator.classList.remove('hidden');
-    els.deviceSelect.disabled = true;
+  isCapturing = false;
+  els.meterContainer.classList.add('hidden');
+  resetMeters();
+
+  // Show manual extract trigger; if fields already exist, transition to done.
+  els.extractSection.classList.remove('hidden');
+
+  if (els.fieldsContainer.children.length > 0) {
+    setStatus('done');
+    renderOutput();
   } else {
-    els.captureBtnText.textContent = 'Start Capture';
-    els.captureIcon.textContent = '🎙️';
-    els.startCaptureBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
-    els.startCaptureBtn.classList.add('bg-emerald-500', 'hover:bg-emerald-600');
-    els.capturingIndicator.classList.add('hidden');
-    els.deviceSelect.disabled = false;
+    setStatus('idle');
+    els.extractSection.scrollIntoView({ behavior: 'smooth' });
   }
 }
 
-function updateLiveTranscript() {
-  els.liveTranscript.textContent = accumulatedTranscript;
+// ─── Transcript Rendering (word-in animation) ──────────────────────────────
+//
+// Final transcript chunks append new words; each new word gets the
+// `lf-word` animation so the transcript fades in word-by-word, matching
+// the dispatcher-assistant design. Interim text is shown without
+// animation (it gets replaced as the broker keeps speaking).
+
+function renderTranscript() {
+  els.liveTranscript.innerHTML = transcriptWords
+    .map((w) => `<span class="lf-word">${escapeHtml(w)}</span>`)
+    .join(' ');
+  // Auto-scroll the transcript into view within its container
+  els.transcriptArea.scrollTop = els.transcriptArea.scrollHeight;
 }
 
 function onTranscriptChunk(chunk) {
   if (chunk.is_final) {
-    accumulatedTranscript += (accumulatedTranscript ? ' ' : '') + chunk.text;
-    updateLiveTranscript();
-
-    // Show speech-pause indicator
-    if (autoExtractEnabled) {
-      setCaptureStatus('Thinking...', 'text-emerald-400');
-    } else {
-      setCaptureStatus('Transcript ready', 'text-blue-400');
+    const text = chunk.text || '';
+    if (text) {
+      const newWords = text.split(/\s+/).filter(Boolean);
+      transcriptWords = transcriptWords.concat(newWords);
+      accumulatedTranscript = (accumulatedTranscript + ' ' + text).trim();
+      renderTranscript();
     }
 
     // Auto-extract: when auto-extract is on and enough new text has accumulated
@@ -397,18 +543,25 @@ function onTranscriptChunk(chunk) {
       }
     }
   } else {
-    // Interim: broker is actively speaking
-    setCaptureStatus('Listening...', 'text-red-400');
-    els.interimTranscript.textContent = chunk.text;
+    // Interim: show as a trailing ghost word without animating
+    const interim = chunk.text || '';
+    const base = transcriptWords
+      .map((w) => `<span class="lf-word">${escapeHtml(w)}</span>`)
+      .join(' ');
+    const interimHtml = interim
+      ? `<span class="text-slate-500 italic">${escapeHtml(interim)}</span>`
+      : '';
+    els.liveTranscript.innerHTML = base + (base ? ' ' : '') + interimHtml;
+    els.transcriptArea.scrollTop = els.transcriptArea.scrollHeight;
   }
 }
 
-// ─── Status Indicator ─────────────────────────────────────────────────────
-
-function setCaptureStatus(text, colorClass) {
-  if (els.captureStatus) {
-    els.captureStatus.textContent = text;
-    els.captureStatus.className = 'text-xs font-medium ' + colorClass;
+function onTranscriptComplete(event) {
+  const text = event.payload?.text || '';
+  if (text) {
+    accumulatedTranscript = text;
+    transcriptWords = text.split(/\s+/).filter(Boolean);
+    renderTranscript();
   }
 }
 
@@ -432,9 +585,8 @@ async function performExtract(showSpinner = true) {
   }
 
   if (showSpinner) {
+    setStatus('processing');
     setExtractingUI(true);
-  } else {
-    setCaptureStatus('AI extracting...', 'text-amber-400');
   }
 
   try {
@@ -445,33 +597,27 @@ async function performExtract(showSpinner = true) {
     currentExtractedData = result.data;
     currentConfidence = result.confidence;
 
-    renderForm(result.data, result.confidence);
-    els.formSection.classList.remove('hidden');
-
-    if (showSpinner) {
-      els.formSection.scrollIntoView({ behavior: 'smooth' });
-    }
-
+    renderFieldCards(result.data, result.confidence);
     renderOutput();
-    setCaptureStatus('Fields updated', 'text-emerald-400');
 
     // Persist the extracted load (insert on first save, update thereafter).
     await saveCurrentLoad();
+
+    // Return to listening if still capturing, otherwise mark done.
+    if (isCapturing) {
+      setStatus('listening');
+    } else {
+      setStatus('done');
+      els.outputSection.classList.remove('hidden');
+      els.outputSection.scrollIntoView({ behavior: 'smooth' });
+    }
   } catch (err) {
     console.error('Auto-extract failed:', err);
-    setCaptureStatus('Extract failed', 'text-red-400');
+    if (isCapturing) setStatus('listening');
   } finally {
     if (showSpinner) {
       setExtractingUI(false);
     }
-  }
-}
-
-function onTranscriptComplete(event) {
-  const text = event.payload?.text || '';
-  if (text) {
-    accumulatedTranscript = text;
-    updateLiveTranscript();
   }
 }
 
@@ -491,48 +637,74 @@ function setExtractingUI(extracting) {
   }
 }
 
-// ─── Form Rendering ─────────────────────────────────────────────────────────
+// ─── Field Card Rendering ───────────────────────────────────────────────────
+//
+// Each field is a card with an icon, uppercase label, value (or editable
+// input), confidence badge, and an animated check that pops in when the
+// field is filled. Inputs remain editable so the dispatcher can correct
+// anything that looks wrong, exactly like the original LoadForm.
 
-function renderForm(data, confidence) {
+function fieldIconSvg(iconKey) {
+  const path = FIELD_ICONS[iconKey] || FIELD_ICONS['map-pin'];
+  return `<svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
+}
+
+function confidenceClass(conf) {
+  if (conf >= 0.8) return 'lf-conf-high';
+  if (conf >= 0.5) return 'lf-conf-med';
+  return 'lf-conf-low';
+}
+
+function renderFieldCards(data, confidence) {
   els.fieldsContainer.innerHTML = '';
 
   FIELDS.forEach((field) => {
     const value = data[field.key] || '';
     const conf = confidence[field.key] || 0.0;
-    const borderColor = getConfidenceBorderColor(conf);
-    const badgeColor = getConfidenceBadgeColor(conf);
-    const reviewFlag = needsReview(conf) ? ' ⚠️' : '';
+    const filled = Boolean(value);
+    const review = needsReview(conf);
 
-    const fieldEl = document.createElement('div');
-    fieldEl.className = 'fade-in p-3 rounded-xl bg-slate-950/30 border border-white/5';
-    fieldEl.innerHTML = `
-      <div class="flex items-center justify-between mb-1.5">
-        <label class="text-sm font-medium text-slate-200" for="field-${field.key}">
-          ${field.label}${reviewFlag}
-        </label>
-        <span class="text-xs px-2 py-0.5 rounded-full font-mono ${badgeColor}">
-          ${Math.round(conf * 100)}%
-        </span>
+    const card = document.createElement('div');
+    card.className = 'lf-field-card fade-in' + (filled ? ' is-filled' : '') + (review && filled ? ' is-review' : '');
+    card.innerHTML = `
+      <div class="lf-field-icon">${fieldIconSvg(field.icon)}</div>
+      <div class="lf-field-body">
+        <p class="lf-field-label">${field.label}</p>
+        <input
+          class="lf-field-input"
+          data-field="${field.key}"
+          value="${escapeHtml(value)}"
+          placeholder="${field.placeholder}"
+        />
+        ${filled && conf > 0 ? `<span class="lf-field-conf ${confidenceClass(conf)}">${Math.round(conf * 100)}%</span>` : ''}
       </div>
-      <input
-        id="field-${field.key}"
-        data-field="${field.key}"
-        value="${escapeHtml(value)}"
-        placeholder="${field.placeholder}"
-        class="lf-input border-2 ${borderColor}"
-      />
+      <div class="lf-field-check" style="${filled ? '' : 'display:none'}">
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+      </div>
     `;
 
-    els.fieldsContainer.appendChild(fieldEl);
+    els.fieldsContainer.appendChild(card);
   });
 
   els.fieldsContainer.querySelectorAll('input').forEach((input) => {
     input.addEventListener('input', () => {
       currentExtractedData[input.dataset.field] = input.value;
+      const card = input.closest('.lf-field-card');
+      const filled = Boolean(input.value);
+      card.classList.toggle('is-filled', filled);
+      const check = card.querySelector('.lf-field-check');
+      if (check) check.style.display = filled ? '' : 'none';
       renderOutput();
       scheduleEditSave();
     });
   });
+}
+
+// Render empty placeholder cards so the right column is always populated
+// (matches the dispatcher-assistant layout where field cards are visible
+// from the start, even before any capture). Reused on resetForm().
+function renderEmptyFieldCards() {
+  renderFieldCards({}, {});
 }
 
 function escapeHtml(text) {
@@ -541,11 +713,13 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// ─── Output Rendering ───────────────────────────────────────────────────────
+// ─── Output / Driver Message Rendering ───────────────────────────────────────
 
 function renderOutput() {
-  if (!currentExtractedData) return;
-
+  if (!currentExtractedData) {
+    els.outputSection.classList.add('hidden');
+    return;
+  }
   const text = renderTemplate(DEFAULT_TEMPLATE, currentExtractedData);
   els.outputPreview.textContent = text;
   els.outputSection.classList.remove('hidden');
@@ -558,8 +732,14 @@ async function copyToClipboard() {
   const ok = await writeTextToClipboard(text);
 
   if (ok) {
+    els.copyBtnContent.innerHTML =
+      '<svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg> Copied';
     els.copyFeedback.classList.remove('hidden');
-    setTimeout(() => els.copyFeedback.classList.add('hidden'), 2000);
+    setTimeout(() => {
+      els.copyBtnContent.innerHTML =
+        '<svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg> Copy';
+      els.copyFeedback.classList.add('hidden');
+    }, 2000);
   }
 }
 
@@ -601,24 +781,25 @@ async function handleNewLoad() {
 
 function resetForm() {
   accumulatedTranscript = '';
+  transcriptWords = [];
   currentExtractedData = null;
   currentConfidence = {};
   isCapturing = false;
 
-  els.liveTranscript.textContent = '';
-  els.interimTranscript.textContent = '';
+  els.liveTranscript.innerHTML = '';
   els.transcriptArea.classList.add('hidden');
+  els.transcriptArea.classList.remove('has-text');
   els.extractSection.classList.add('hidden');
-  els.formSection.classList.add('hidden');
   els.outputSection.classList.add('hidden');
-  els.fieldsContainer.innerHTML = '';
   els.outputPreview.textContent = '';
-  setCaptureStatus('', 'text-slate-400');
 
   els.meterContainer.classList.add('hidden');
   resetMeters();
 
-  setCapturingUI(false);
+  // Restore empty placeholder field cards so the right column stays populated.
+  renderEmptyFieldCards();
+
+  setStatus('idle');
 }
 
 // ─── Load History ────────────────────────────────────────────────────────────
@@ -754,13 +935,14 @@ async function openLoad(id) {
   }
   currentConfidence = load.confidence || {};
   accumulatedTranscript = load.transcript || '';
+  transcriptWords = accumulatedTranscript ? accumulatedTranscript.split(/\s+/).filter(Boolean) : [];
 
-  renderForm(currentExtractedData, currentConfidence);
-  els.formSection.classList.remove('hidden');
+  renderFieldCards(currentExtractedData, currentConfidence);
   renderOutput();
+  setStatus('done');
 
   toggleHistoryPanel(false);
-  els.formSection.scrollIntoView({ behavior: 'smooth' });
+  els.outputSection.scrollIntoView({ behavior: 'smooth' });
   renderLoadsList();
 }
 
@@ -769,10 +951,7 @@ async function copyLoadDriverData(id) {
   const load = await fetchLoad(supabase, id);
   if (!load) return;
   const text = loadToDriverText(load);
-  const ok = await writeTextToClipboard(text);
-  if (ok) {
-    setCaptureStatus('Driver data copied', 'text-emerald-400');
-  }
+  await writeTextToClipboard(text);
 }
 
 // Mark a load complete or reactivate it.
@@ -999,7 +1178,18 @@ window.addEventListener('DOMContentLoaded', () => {
 
   loadDevices();
 
-  els.startCaptureBtn.addEventListener('click', toggleCapture);
+  // Render empty placeholder field cards so the right column is populated
+  // from the start (prevents the orb from looking left-aligned on desktop).
+  renderEmptyFieldCards();
+
+  // Voice orb drives capture (and "new load" when done).
+  els.voiceOrb.addEventListener('click', () => {
+    if (status === 'done') {
+      handleNewLoad();
+    } else {
+      toggleCapture();
+    }
+  });
   els.extractBtn.addEventListener('click', handleExtract);
   els.copyBtn.addEventListener('click', copyToClipboard);
   els.newLoadBtn.addEventListener('click', handleNewLoad);
@@ -1022,6 +1212,11 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsBtn.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
+
+  // Tutorial replay (manual trigger)
+  if (els.helpBtn) {
+    els.helpBtn.addEventListener('click', startTutorial);
+  }
 
   // Load history listeners
   els.historyBtn.addEventListener('click', () => {
