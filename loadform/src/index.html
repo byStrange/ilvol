@@ -116,33 +116,52 @@
       </div>
     </div>
 
-    <div id="app" class="max-w-3xl mx-auto px-4 py-8">
+    <div id="app" class="max-w-6xl mx-auto px-6 md:px-10 pb-12">
       <!-- Header -->
-      <header class="flex items-center justify-between mb-8">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center font-extrabold text-slate-900 shadow-lg shadow-emerald-500/25">
-            L
-          </div>
-          <div>
-            <h1 class="text-xl font-bold text-white leading-none">LoadForm</h1>
-            <span class="text-[11px] text-slate-500">AI load capture</span>
+      <header class="flex items-center justify-between py-5">
+        <div class="flex items-center gap-2.5">
+          <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/20">
+            <svg class="h-5 w-5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" /><path d="M15 18H9" /><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" /><circle cx="17" cy="18" r="2" /><circle cx="7" cy="18" r="2" />
+            </svg>
+          </span>
+          <div class="leading-tight">
+            <p class="text-sm font-semibold tracking-tight text-white">LoadForm</p>
+            <p class="text-[11px] text-slate-500">Voice load capture</p>
           </div>
         </div>
-        <div class="flex items-center gap-2.5">
-          <span id="status-badge" class="lf-pill text-xs px-2.5 py-1 rounded-full text-slate-400 hidden">Ready</span>
+        <div class="flex items-center gap-3">
+          <span id="status-badge" class="lf-status-pill hidden">
+            <span class="lf-dot"></span>
+            <span id="status-badge-label">Ready</span>
+          </span>
+          <button
+            id="help-btn"
+            class="lf-help-btn h-9 w-9 rounded-xl flex items-center justify-center"
+            title="Replay the tutorial"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>
+            </svg>
+          </button>
           <button
             id="history-btn"
             class="lf-icon-btn h-9 rounded-xl text-slate-200 flex items-center justify-center gap-1.5 px-3 text-sm font-medium"
             title="Load history"
           >
-            🗂 <span class="hidden sm:inline">History</span>
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" /><rect x="7" y="7" width="10" height="10" rx="1" />
+            </svg>
+            <span class="hidden sm:inline">History</span>
           </button>
           <button
             id="settings-btn"
-            class="lf-icon-btn w-9 h-9 rounded-xl text-slate-300 flex items-center justify-center text-base"
+            class="lf-icon-btn w-9 h-9 rounded-xl text-slate-300 flex items-center justify-center"
             title="Settings"
           >
-            ⚙️
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" />
+            </svg>
           </button>
         </div>
       </header>
@@ -152,7 +171,6 @@
         <div class="glass glass-lit rounded-2xl p-5">
           <div class="flex items-center justify-between mb-4">
             <div class="flex items-center gap-2">
-              <span class="text-base">🗂</span>
               <h2 class="text-lg font-semibold text-white">Load History</h2>
               <span id="history-count" class="lf-pill text-xs px-2 py-0.5 rounded-full text-slate-400"></span>
             </div>
@@ -175,160 +193,150 @@
         </div>
       </section>
 
-      <!-- Capture Section -->
-      <section id="capture-section" class="mb-6">
-        <div class="glass glass-lit rounded-2xl p-6">
-          <div class="flex items-center gap-2 mb-5">
-            <span class="text-base">🎙️</span>
-            <h2 class="text-lg font-semibold text-white">Audio Capture</h2>
-          </div>
-
-          <!-- Device Selector -->
-          <div class="mb-4">
-            <label class="block text-xs text-slate-400 mb-1.5 font-medium">Audio Source</label>
-            <select id="device-select" class="lf-select">
-              <option value="" disabled selected>Loading devices...</option>
-            </select>
-            <p id="device-hint" class="text-xs text-slate-500 mt-2 hidden"></p>
-          </div>
-
-          <!-- Mix System Audio (Pro feature) -->
-          <div id="mix-system-row" class="mb-4 hidden">
-            <label class="lf-toggle-row" for="mix-system-checkbox">
-              <span class="lf-toggle-text">
-                <span>Mix System Audio<span class="lf-pro-badge">PRO</span></span>
-                <span class="lf-toggle-sub">Capture mic + system audio together</span>
+      <!-- Main two-column capture + fields layout -->
+      <div class="lf-app-grid">
+        <!-- Left: capture -->
+        <section class="lf-col-capture">
+          <!-- Voice orb -->
+          <button id="voice-orb" class="lf-orb" aria-label="Start listening">
+            <span class="lf-orb-glow"></span>
+            <span class="lf-orb-ring lf-orb-ring-2"></span>
+            <span class="lf-orb-ring lf-orb-ring-1"></span>
+            <span class="lf-orb-core" id="orb-core">
+              <span id="orb-content" class="lf-orb-icon">
+                <!-- icon injected by JS -->
               </span>
-              <span class="lf-toggle-switch">
-                <input id="mix-system-checkbox" type="checkbox" />
-                <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
-              </span>
-            </label>
-          </div>
-
-          <!-- Capture Controls -->
-          <div class="flex items-center gap-4 mb-3">
-            <button
-              id="start-capture-btn"
-              class="lf-btn lf-btn-primary flex items-center gap-2 px-6 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-base"
-            >
-              <span id="capture-icon">🎙️</span>
-              <span id="capture-btn-text">Start Capture</span>
-            </button>
-
-            <div id="capturing-indicator" class="hidden flex items-center gap-2">
-              <span class="w-2.5 h-2.5 bg-red-500 rounded-full pulse-dot"></span>
-              <span class="text-sm text-red-400 font-medium">Listening...</span>
-            </div>
-          </div>
-
-          <!-- Auto-extract toggle -->
-          <div class="mb-2">
-            <label class="lf-toggle-row" for="auto-extract-checkbox">
-              <span class="lf-toggle-text">
-                <span>Auto-fill form as broker speaks</span>
-                <span class="lf-toggle-sub">Triggers on conversation pauses</span>
-              </span>
-              <span class="lf-toggle-switch">
-                <input id="auto-extract-checkbox" type="checkbox" />
-                <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
-              </span>
-            </label>
-          </div>
-
-          <!-- Audio Level Meters (per-source dev visualization) -->
-          <div id="meter-container" class="mt-4 space-y-3 hidden">
-            <!-- per-source bar meters injected by JS -->
-          </div>
-
-          <!-- Live Transcript -->
-          <div id="transcript-area" class="mt-4 p-4 rounded-xl bg-slate-950/40 border border-white/5 min-h-[80px] hidden">
-            <div class="flex items-center justify-between mb-2">
-              <span class="text-xs text-slate-500 font-medium">Live Transcript</span>
-              <span id="capture-status" class="text-xs font-medium text-slate-400">Listening...</span>
-            </div>
-            <div id="live-transcript" class="text-sm text-slate-300 leading-relaxed"></div>
-            <div id="interim-transcript" class="text-sm text-slate-500 italic mt-1"></div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Extract Section -->
-      <section id="extract-section" class="mb-6 hidden">
-        <div class="glass glass-lit rounded-2xl p-6">
-          <div class="flex items-center justify-between mb-4">
-            <div class="flex items-center gap-2">
-              <span class="text-base">✨</span>
-              <h2 class="text-lg font-semibold text-white">Extract Load Details</h2>
-            </div>
-            <span id="extraction-status" class="text-xs text-slate-400 hidden">Processing...</span>
-          </div>
-
-          <button
-            id="extract-btn"
-            class="lf-btn lf-btn-blue w-full py-3 bg-blue-500 hover:bg-blue-600 text-white text-base mb-2"
-          >
-            🔄 Complete &amp; Extract Fields
+            </span>
           </button>
-          <div id="extraction-spinner" class="hidden flex items-center justify-center gap-2 py-3">
-            <svg class="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24">
-              <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
-              <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span class="text-sm text-blue-400">Extracting with AI...</span>
-          </div>
-        </div>
-      </section>
 
-      <!-- Form Section -->
-      <section id="form-section" class="mb-6 hidden">
-        <div class="glass glass-lit rounded-2xl p-6">
-          <div class="flex items-center gap-2 mb-1">
-            <span class="text-base">📋</span>
-            <h2 class="text-lg font-semibold text-white">Load Details</h2>
-          </div>
-          <p class="text-sm text-slate-400 mb-4">Review and edit each field. Border colors show confidence — edit anything that looks wrong.</p>
+          <!-- Status copy -->
+          <h1 id="status-title" class="lf-status-title">Tap to capture a load</h1>
+          <p id="status-sub" class="lf-status-sub">Read the broker's offer out loud. I'll build the dispatch as you talk.</p>
 
-          <div id="fields-container" class="space-y-3">
-            <!-- Fields injected by JS -->
-          </div>
-        </div>
-      </section>
-
-      <!-- Output Section -->
-      <section id="output-section" class="mb-6 hidden">
-        <div class="glass glass-lit rounded-2xl p-6">
-          <div class="flex items-center gap-2 mb-4">
-            <span class="text-base">📤</span>
-            <h2 class="text-lg font-semibold text-white">Output for Driver</h2>
+          <!-- Transcript -->
+          <div id="transcript-area" class="lf-transcript mt-8 hidden">
+            <p id="live-transcript" class="lf-transcript-text"></p>
+            <span id="transcript-cursor" class="lf-transcript-cursor hidden"></span>
           </div>
 
-          <div class="lf-code p-4 mb-4 text-sm text-slate-300 whitespace-pre-wrap" id="output-preview">
-            <!-- Preview injected by JS -->
+          <!-- Device / capture settings (collapsed under orb) -->
+          <div class="mt-8 w-full max-w-md text-left">
+            <details class="glass glass-lit rounded-2xl p-4">
+              <summary class="cursor-pointer text-sm font-medium text-slate-200 flex items-center justify-between">
+                <span>Audio source &amp; options</span>
+                <span class="text-slate-500 text-xs">tap to open</span>
+              </summary>
+              <div class="mt-4 space-y-4">
+                <div>
+                  <label class="block text-xs text-slate-400 mb-1.5 font-medium">Audio Source</label>
+                  <select id="device-select" class="lf-select">
+                    <option value="" disabled selected>Loading devices...</option>
+                  </select>
+                  <p id="device-hint" class="text-xs text-slate-500 mt-2 hidden"></p>
+                </div>
+
+                <div id="mix-system-row" class="hidden">
+                  <label class="lf-toggle-row" for="mix-system-checkbox">
+                    <span class="lf-toggle-text">
+                      <span>Mix System Audio<span class="lf-pro-badge">PRO</span></span>
+                      <span class="lf-toggle-sub">Capture mic + system audio together</span>
+                    </span>
+                    <span class="lf-toggle-switch">
+                      <input id="mix-system-checkbox" type="checkbox" />
+                      <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
+                    </span>
+                  </label>
+                </div>
+
+                <div>
+                  <label class="lf-toggle-row" for="auto-extract-checkbox">
+                    <span class="lf-toggle-text">
+                      <span>Auto-fill form as broker speaks</span>
+                      <span class="lf-toggle-sub">Triggers on conversation pauses</span>
+                    </span>
+                    <span class="lf-toggle-switch">
+                      <input id="auto-extract-checkbox" type="checkbox" />
+                      <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
+                    </span>
+                  </label>
+                </div>
+
+                <div id="meter-container" class="space-y-3 hidden">
+                  <!-- per-source bar meters injected by JS -->
+                </div>
+              </div>
+            </details>
           </div>
 
-          <div class="flex gap-3">
+          <!-- Extract (manual trigger) -->
+          <div id="extract-section" class="mt-6 w-full max-w-md hidden">
             <button
-              id="copy-btn"
-              class="lf-btn lf-btn-primary flex-1 py-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-base"
+              id="extract-btn"
+              class="lf-btn lf-btn-blue w-full py-3 bg-blue-500 hover:bg-blue-600 text-white text-base"
             >
-              📋 Copy to Clipboard
+              <span class="inline-flex items-center justify-center gap-2">
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" /><path d="M16 16h5v5" /></svg>
+                Complete &amp; Extract Fields
+              </span>
             </button>
+            <div id="extraction-spinner" class="hidden flex items-center justify-center gap-2 py-3">
+              <svg class="animate-spin h-5 w-5 text-blue-400" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span class="text-sm text-blue-400">Extracting with AI...</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Right: fields / driver message -->
+        <section class="lf-col-fields">
+          <div id="fields-section">
+            <div id="fields-container" class="lf-fields-grid">
+              <!-- Field cards injected by JS -->
+            </div>
+          </div>
+
+          <div id="output-section" class="hidden mt-6">
+            <div class="lf-driver-msg">
+              <div class="lf-driver-head">
+                <div class="lf-driver-title">
+                  <span class="lf-driver-title-icon">
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z" /><path d="m21.854 2.147-10.94 10.939" /></svg>
+                  </span>
+                  <p>Driver-ready message</p>
+                </div>
+                <button
+                  id="copy-btn"
+                  class="lf-btn lf-btn-primary h-8 inline-flex items-center gap-1.5 rounded-full px-3.5 text-xs font-semibold bg-emerald-500 hover:bg-emerald-600 text-slate-900"
+                >
+                  <span id="copy-btn-content" class="inline-flex items-center gap-1.5">
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg>
+                    Copy
+                  </span>
+                </button>
+              </div>
+              <pre id="output-preview" class="lf-driver-pre"></pre>
+            </div>
+
             <button
               id="new-load-btn"
-              class="lf-btn lf-btn-ghost px-6 py-3 text-white font-medium text-base"
+              class="lf-btn lf-btn-ghost mt-4 w-full py-3 text-white font-medium text-base"
             >
-              🔄 New Load
+              <span class="inline-flex items-center justify-center gap-2">
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 0 9-9 9.75 9.75 0 0 0 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></svg>
+                New Load
+              </span>
             </button>
-          </div>
 
-          <p id="copy-feedback" class="text-sm text-emerald-400 text-center mt-3 hidden">✅ Copied to clipboard!</p>
-        </div>
-      </section>
+            <p id="copy-feedback" class="text-sm text-emerald-400 text-center mt-3 hidden">Copied to clipboard!</p>
+          </div>
+        </section>
+      </div>
 
       <!-- Footer -->
-      <footer class="text-center text-xs text-slate-600 mt-8 pb-4">
-        LoadForm v0.1.0 — Built for dispatchers 🚛
+      <footer class="text-center text-xs text-slate-600 mt-12">
+        LoadForm v0.1.0 — Built for dispatchers
       </footer>
     </div>
 
