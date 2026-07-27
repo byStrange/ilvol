@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LoadForm</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/widget.css" />
+  </head>
+  <body>
+    <div id="widget" class="wf-card" data-tauri-drag-region>
+      <button id="wf-close" class="wf-close" title="Hide widget" aria-label="Hide widget">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </button>
+
+      <!-- Live transcript (muted/disabled color while happening) -->
+      <div id="wf-transcript" class="wf-transcript">
+        <span id="wf-text" class="wf-text"></span><span id="wf-interim" class="wf-interim"></span>
+        <span id="wf-placeholder" class="wf-placeholder">Tap the mic to start capturing…</span>
+      </div>
+
+      <!-- Footer -->
+      <div class="wf-actions">
+        <button id="wf-mic" class="wf-btn wf-btn-mic" title="Start listening" aria-label="Start listening">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="2" width="6" height="12" rx="3" /><path d="M5 10a7 7 0 0 0 14 0" /><path d="M12 19v3" />
+          </svg>
+        </button>
+        <button id="wf-stop" class="wf-btn wf-btn-stop" title="Stop listening" aria-label="Stop listening" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="6" y="6" width="12" height="12" rx="2" />
+          </svg>
+        </button>
+        <div id="wf-wave" class="wf-wave" aria-hidden="true">
+          <span class="wf-bar"></span><span class="wf-bar"></span><span class="wf-bar"></span>
+          <span class="wf-bar"></span><span class="wf-bar"></span><span class="wf-bar"></span>
+          <span class="wf-bar"></span><span class="wf-bar"></span>
+        </div>
+      </div>
+      <button id="wf-continue" class="wf-continue" title="Open the full app">
+        <span>Continue in app</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14" /><path d="m12 5 7 7-7 7" />
+        </svg>
+      </button>
+    </div>
+    <script type="module" src="/widget.js"></script>
+  </body>
+</html>

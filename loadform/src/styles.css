@@ -878,6 +878,49 @@ body {
   transform: translateY(1px);
 }
 
+/* Custom window controls (frameless main window) */
+.lf-win-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.lf-win-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: rgba(203, 213, 225, 0.85);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.lf-win-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.lf-win-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+
+.lf-win-btn:active {
+  transform: translateY(1px);
+}
+
+.lf-win-btn-close:hover {
+  background: rgba(239, 68, 68, 0.85);
+  color: #fff;
+}
+
 /* Status pill */
 .lf-pill {
   background: rgba(51, 65, 85, 0.5);

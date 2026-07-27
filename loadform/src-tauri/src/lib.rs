@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 mod audio_capture;
 mod config;
@@ -274,28 +274,98 @@ fn start_capture_cmd(
     }
 
     let options = CaptureOptions {
-        device_id,
+        device_id: device_id.clone(),
         mix_system_audio,
     };
 
     let handle = start_capture(
-        app,
+        app.clone(),
         config.config.lock().unwrap().deepgram_api_key.clone(),
         options,
     )?;
     *guard = Some(handle);
+    let _ = app.emit(
+        "capture:state",
+        serde_json::json!({
+            "running": true,
+            "deviceId": device_id,
+            "mixSystemAudio": mix_system_audio,
+        }),
+    );
     Ok(())
 }
 
 #[tauri::command]
-fn stop_capture(state: State<'_, CaptureState>) -> Result<(), String> {
+fn stop_capture(state: State<'_, CaptureState>, app: AppHandle) -> Result<(), String> {
     let mut guard = state.handle.lock().unwrap();
     if let Some(handle) = guard.take() {
         handle.stop();
+        let _ = app.emit("capture:state", serde_json::json!({ "running": false }));
         Ok(())
     } else {
         Err("No capture running".to_string())
     }
+}
+
+#[tauri::command]
+fn is_capture_running(state: State<'_, CaptureState>) -> bool {
+    state.handle.lock().unwrap().is_some()
+}
+
+#[tauri::command]
+fn toggle_widget(app: AppHandle) -> Result<(), String> {
+    let Some(window) = app.get_webview_window("widget") else {
+        return Err("Widget window not found".to_string());
+    };
+    if window.is_visible().map_err(|e| e.to_string())? {
+        window.hide().map_err(|e| e.to_string())?;
+    } else {
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.set_focus();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn continue_in_app(app: AppHandle) -> Result<(), String> {
+    // Focus the main window (show it in case it was minimized), then hide the
+    // floating widget. Driven from Rust so it doesn't depend on JS-side
+    // window-control permissions.
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.unminimize();
+        let _ = main.set_focus();
+    }
+    if let Some(widget) = app.get_webview_window("widget") {
+        widget.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn minimize_main(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or("Main window not found")?
+        .minimize()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn toggle_maximize_main(app: AppHandle) -> Result<(), String> {
+    let win = app.get_webview_window("main").ok_or("Main window not found")?;
+    if win.is_maximized().map_err(|e| e.to_string())? {
+        win.unmaximize().map_err(|e| e.to_string())
+    } else {
+        win.maximize().map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+fn close_main(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or("Main window not found")?
+        .close()
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Deserialize)]
@@ -334,6 +404,12 @@ pub fn run() {
             list_devices,
             start_capture_cmd,
             stop_capture,
+            is_capture_running,
+            toggle_widget,
+            continue_in_app,
+            minimize_main,
+            toggle_maximize_main,
+            close_main,
             set_api_keys,
             logout,
         ])

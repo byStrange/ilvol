@@ -43,6 +43,33 @@ function tauriInvoke(cmd, args = {}) {
   throw new Error('Tauri runtime not available. Run inside Tauri app.');
 }
 
+// ─── Floating Widget Window ─────────────────────────────────────────────────
+//
+// The widget is a second Tauri window (label "widget") declared in
+// tauri.conf.json — frameless, transparent, always-on-top, skip-taskbar,
+// created hidden at startup. Show/hide is handled in Rust (toggle_widget)
+// so it doesn't depend on JS-side window-control permissions.
+
+async function toggleWidgetWindow() {
+  try {
+    await tauriInvoke('toggle_widget');
+  } catch (err) {
+    console.error('toggleWidgetWindow error:', err);
+  }
+}
+
+// Custom window controls for the frameless main window. Handled in Rust so they
+// don't depend on JS-side window-control permissions.
+async function minimizeMainWindow() {
+  try { await tauriInvoke('minimize_main'); } catch (e) { console.error(e); }
+}
+async function toggleMaximizeMainWindow() {
+  try { await tauriInvoke('toggle_maximize_main'); } catch (e) { console.error(e); }
+}
+async function closeMainWindow() {
+  try { await tauriInvoke('close_main'); } catch (e) { console.error(e); }
+}
+
 // ─── Status State Machine ─────────────────────────────────────────────────
 //
 // Mirrors the dispatcher-assistant design. `status` drives the orb, the
@@ -139,6 +166,10 @@ const els = {
   fieldsContainer: document.getElementById('fields-container'),
   outputSection: document.getElementById('output-section'),
   outputPreview: document.getElementById('output-preview'),
+  widgetBtn: document.getElementById('widget-btn'),
+  winMinimize: document.getElementById('win-minimize'),
+  winMaximize: document.getElementById('win-maximize'),
+  winClose: document.getElementById('win-close'),
   copyBtn: document.getElementById('copy-btn'),
   copyBtnContent: document.getElementById('copy-btn-content'),
   copyFeedback: document.getElementById('copy-feedback'),
@@ -154,6 +185,7 @@ const els = {
   authToggleText: document.getElementById('auth-toggle-text'),
   authError: document.getElementById('auth-error'),
   settingsBtn: document.getElementById('settings-btn'),
+  widgetBtn: document.getElementById('widget-btn'),
   settingsModal: document.getElementById('settings-modal'),
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
@@ -432,6 +464,14 @@ function resetMeters() {
 }
 
 // ─── Capture Flow ───────────────────────────────────────────────────────────
+//
+// The Rust backend is the single source of truth for capture state and
+// broadcasts `capture:state` { running, deviceId, mixSystemAudio } to every
+// window on start/stop. Both the main window and the floating widget react to
+// that event, so whichever side starts or stops capture, both UIs stay in
+// sync. The click handlers below only validate + invoke the command; all UI
+// transitions live in enterListeningUI / exitListeningUI, driven by
+// onCaptureState.
 
 async function toggleCapture() {
   if (isCapturing) {
@@ -446,12 +486,31 @@ async function startCapture() {
     alert('Please select an audio device first.');
     return;
   }
-
   // Starting a new capture from `done` resets the form first.
   if (status === 'done') {
     resetForm();
   }
+  try {
+    await tauriInvoke('start_capture_cmd', {
+      deviceId: selectedDeviceId,
+      mixSystemAudio: els.mixSystemCheckbox.checked,
+    });
+  } catch (err) {
+    console.error('Failed to start capture:', err);
+    alert('Failed to start capture: ' + err);
+  }
+}
 
+async function stopCapture() {
+  if (!isCapturing) return;
+  try {
+    await tauriInvoke('stop_capture');
+  } catch (err) {
+    console.error('Error stopping capture:', err);
+  }
+}
+
+function enterListeningUI() {
   accumulatedTranscript = '';
   transcriptWords = [];
   currentExtractedData = null;
@@ -461,38 +520,16 @@ async function startCapture() {
   renderEmptyFieldCards(); // reset cards to empty placeholders
   els.outputPreview.textContent = '';
   els.outputSection.classList.add('hidden');
+  els.extractSection.classList.add('hidden');
   els.transcriptArea.classList.remove('hidden');
   els.transcriptArea.classList.add('has-text');
   isCapturing = true;
   setStatus('listening');
-
-  const options = {
-    deviceId: selectedDeviceId,
-    mixSystemAudio: els.mixSystemCheckbox.checked,
-  };
-
-  try {
-    await tauriInvoke('start_capture_cmd', options);
-    resetMeters();
-    els.meterContainer.classList.remove('hidden');
-  } catch (err) {
-    console.error('Failed to start capture:', err);
-    alert('Failed to start capture: ' + err);
-    isCapturing = false;
-    setStatus('idle');
-    els.transcriptArea.classList.add('hidden');
-  }
+  resetMeters();
+  els.meterContainer.classList.remove('hidden');
 }
 
-async function stopCapture() {
-  if (!isCapturing) return;
-
-  try {
-    await tauriInvoke('stop_capture');
-  } catch (err) {
-    console.error('Error stopping capture:', err);
-  }
-
+function exitListeningUI() {
   isCapturing = false;
   els.meterContainer.classList.add('hidden');
   resetMeters();
@@ -506,6 +543,23 @@ async function stopCapture() {
   } else {
     setStatus('idle');
     els.extractSection.scrollIntoView({ behavior: 'smooth' });
+  }
+}
+
+function onCaptureState(payload) {
+  if (payload?.running) {
+    // Sync the device/mix controls to reflect what's actually capturing, so
+    // the main UI matches a session started from the widget (and vice versa).
+    if (typeof payload.deviceId === 'string') {
+      selectedDeviceId = payload.deviceId;
+      if (els.deviceSelect) els.deviceSelect.value = payload.deviceId;
+    }
+    if (typeof payload.mixSystemAudio === 'boolean' && els.mixSystemCheckbox) {
+      els.mixSystemCheckbox.checked = payload.mixSystemAudio;
+    }
+    enterListeningUI();
+  } else {
+    exitListeningUI();
   }
 }
 
@@ -1213,11 +1267,20 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
 
+  // Floating widget: show/hide the always-on-top capture remote.
+  if (els.widgetBtn) {
+    els.widgetBtn.addEventListener('click', toggleWidgetWindow);
+  }
+
   // Tutorial replay (manual trigger)
   if (els.helpBtn) {
     els.helpBtn.addEventListener('click', startTutorial);
   }
 
+  // Custom frameless window controls
+  if (els.winMinimize) els.winMinimize.addEventListener('click', minimizeMainWindow);
+  if (els.winMaximize) els.winMaximize.addEventListener('click', toggleMaximizeMainWindow);
+  if (els.winClose) els.winClose.addEventListener('click', closeMainWindow);
   // Load history listeners
   els.historyBtn.addEventListener('click', () => {
     toggleHistoryPanel();
@@ -1239,6 +1302,9 @@ window.addEventListener('DOMContentLoaded', () => {
   });
 
   if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.event) {
+    window.__TAURI__.event.listen('capture:state', (event) => {
+      onCaptureState(event.payload);
+    });
     window.__TAURI__.event.listen('transcript:chunk', (event) => {
       onTranscriptChunk(event.payload);
     });
