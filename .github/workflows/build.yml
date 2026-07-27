@@ -44,7 +44,7 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri -> target
+          workspaces: loadform/src-tauri -> target
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -60,12 +60,14 @@ jobs:
             pkg-config
 
       - name: Install frontend dependencies
+        working-directory: ./loadform
         run: npm install
 
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          projectPath: loadform
           tauriScript: npx tauri
           tagName: ${{ github.ref_name }}
           releaseName: "LoadForm ${{ github.ref_name }}"
@@ -79,11 +81,11 @@ jobs:
         with:
           name: loadform-${{ matrix.platform }}
           path: |
-            src-tauri/target/**/release/bundle/**/*.dmg
-            src-tauri/target/**/release/bundle/**/*.app
-            src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.AppImage
-            src-tauri/target/**/release/bundle/**/*.rpm
-            src-tauri/target/**/release/bundle/**/*.msi
-            src-tauri/target/**/release/bundle/**/*.exe
+            loadform/src-tauri/target/**/release/bundle/**/*.dmg
+            loadform/src-tauri/target/**/release/bundle/**/*.app
+            loadform/src-tauri/target/**/release/bundle/**/*.deb
+            loadform/src-tauri/target/**/release/bundle/**/*.AppImage
+            loadform/src-tauri/target/**/release/bundle/**/*.rpm
+            loadform/src-tauri/target/**/release/bundle/**/*.msi
+            loadform/src-tauri/target/**/release/bundle/**/*.exe
           if-no-files-found: warn
