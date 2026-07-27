@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
@@ -25,5 +26,12 @@ export default defineConfig({
     minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
     // Produce sourcemaps for debug builds
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // Emit the floating widget as a second entry alongside index.html
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'src/index.html'),
+        widget: resolve(__dirname, 'src/widget.html'),
+      },
+    },
   },
 });
