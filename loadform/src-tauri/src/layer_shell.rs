@@ -13,7 +13,8 @@
 //! screen position (x, y). This is the Wayland-native equivalent of X11's
 //! `move(x, y)` and works reliably on niri.
 
-#![cfg(target_os = "linux")]
+//! Declared only on Linux (see the `mod layer_shell` in lib.rs) — the gtk and
+//! glib dependencies it needs are Linux-only target dependencies.
 
 use gtk::glib;
 use gtk::prelude::*;
@@ -63,7 +64,6 @@ type GtkWindowPtr = *mut std::os::raw::c_void;
 
 extern "C" {
     fn gtk_layer_is_supported() -> glib::ffi::gboolean;
-    fn gtk_layer_is_layer_window(window: GtkWindowPtr) -> glib::ffi::gboolean;
     fn gtk_layer_init_for_window(window: GtkWindowPtr);
     fn gtk_layer_set_layer(window: GtkWindowPtr, layer: LayerShellLayer);
     fn gtk_layer_set_anchor(window: GtkWindowPtr, edge: LayerShellEdge, anchor_to_edge: glib::ffi::gboolean);
@@ -79,14 +79,6 @@ const FALSE: glib::ffi::gboolean = 0;
 /// Check whether the compositor supports the layer-shell protocol.
 pub fn is_supported() -> bool {
     unsafe { gtk_layer_is_supported() == TRUE }
-}
-
-/// Check whether a window has already been initialized as a layer-shell surface.
-pub fn is_layer_window(app: &AppHandle, label: &str) -> bool {
-    match gtk_window_ptr(app, label) {
-        Ok(ptr) => unsafe { gtk_layer_is_layer_window(ptr) == TRUE },
-        Err(_) => false,
-    }
 }
 
 /// Get the raw `GtkWindow*` pointer from a Tauri webview window on Linux.
