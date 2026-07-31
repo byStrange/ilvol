@@ -31,6 +31,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'src/index.html'),
         widget: resolve(__dirname, 'src/widget.html'),
+        planet: resolve(__dirname, 'src/planet.html'),
       },
     },
   },

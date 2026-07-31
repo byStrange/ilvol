@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LoadForm Planet</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/widget.css" />
+  </head>
+  <body>
+    <!-- A single planet chip. Each planet is its own layer-shell window.
+         Data arrives via the `planet:data` Tauri event. -->
+    <div id="planet" class="wf-planet">
+      <div class="wf-planet-head">
+        <span id="p-icon" class="wf-planet-icon"></span>
+        <span id="p-label" class="wf-planet-label"></span>
+      </div>
+      <div id="p-value" class="wf-planet-value"></div>
+    </div>
+    <script type="module" src="/planet.js"></script>
+  </body>
+</html>

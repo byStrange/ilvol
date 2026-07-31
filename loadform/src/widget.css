@@ -1,6 +1,11 @@
 /**
- * LoadForm floating widget — minimal always-on-top capture remote.
- * Frameless, transparent; rounded glass card driven by widget.js.
+ * LoadForm floating widget — orbital "sun + planets" capture remote.
+ *
+ * The sun (this file) is a single layer-shell window with capture controls
+ * and the live transcript. Planet chips are separate layer-shell windows
+ * (planet.html), each loading this same stylesheet for the chip appearance.
+ * On Wayland/niri, layer-shell surfaces can be positioned at exact screen
+ * coordinates — that's how planets orbit the sun and follow it when dragged.
  */
 
 html,
@@ -19,7 +24,7 @@ body {
   overflow: hidden;
 }
 
-/* ─── Card (transparent window surface) ─────────────────────────────────── */
+/* ─── Card (the sun — control surface) ──────────────────────────────────── */
 
 .wf-card {
   position: relative;
@@ -30,7 +35,7 @@ body {
   gap: 8px;
   padding: 12px 12px 12px;
   border-radius: 16px;
-  background: rgba(15, 23, 42, 0.78);
+  background: rgba(15, 23, 42, 0.82);
   backdrop-filter: blur(22px) saturate(150%);
   -webkit-backdrop-filter: blur(22px) saturate(150%);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -43,49 +48,46 @@ body {
   position: absolute;
   top: 6px;
   right: 6px;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   width: 22px;
   height: 22px;
+  display: grid;
+  place-items: center;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
-  color: rgba(148, 163, 184, 0.75);
+  color: rgba(148, 163, 184, 0.6);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: color 0.15s, background 0.15s;
 }
 
 .wf-close svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 .wf-close:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f8fafc;
+  color: rgba(248, 250, 252, 0.95);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* ─── Transcript (muted "disabled" text while happening) ────────────────── */
 
 .wf-transcript {
-  flex: 1;
-  min-height: 0;
+  margin-top: 4px;
+  height: 64px;
   overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(71, 85, 105, 0.6) transparent;
   font-size: 12px;
-  line-height: 1.55;
-  padding-right: 24px;
+  line-height: 1.45;
+  padding-right: 2px;
 }
 
 .wf-transcript::-webkit-scrollbar {
   width: 4px;
 }
+
 .wf-transcript::-webkit-scrollbar-thumb {
-  background: rgba(71, 85, 105, 0.6);
-  border-radius: 2px;
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 4px;
 }
 
 /* Final transcript words render in a faded/disabled slate tone. */
@@ -95,13 +97,12 @@ body {
 
 /* Interim (not-yet-final) words are even fainter + italic. */
 .wf-interim {
-  color: rgba(148, 163, 184, 0.42);
+  color: rgba(148, 163, 184, 0.4);
   font-style: italic;
 }
 
 .wf-card.is-listening .wf-text {
-  /* Slightly brighter while actively capturing so the user sees it's live. */
-  color: rgba(148, 163, 184, 0.88);
+  color: rgba(148, 163, 184, 0.55);
 }
 
 .wf-placeholder {
@@ -114,23 +115,24 @@ body {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 2px 2px 0;
 }
 
 .wf-wave {
+  flex: 1;
   display: flex;
   align-items: center;
-  gap: 3px;
-  height: 32px;
-  margin-left: auto;
+  justify-content: center;
+  gap: 2px;
+  height: 28px;
 }
 
 .wf-bar {
-  display: block;
-  width: 3px;
+  width: 2px;
   height: 4px;
   border-radius: 2px;
-  background: rgba(16, 185, 129, 0.5);
-  transition: height 0.06s linear, background 0.2s;
+  background: rgba(148, 163, 184, 0.3);
+  transition: height 0.08s linear;
 }
 
 .wf-card.is-listening .wf-bar {
@@ -140,15 +142,17 @@ body {
 /* Action buttons are large circular touch targets so capture control
    gets clear focus in a tiny window. */
 .wf-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
+  flex: 0 0 auto;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
   border: none;
-  border-radius: 999px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(226, 232, 240, 0.85);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, transform 0.05s, box-shadow 0.15s;
+  transition: background 0.15s, transform 0.08s, color 0.15s;
 }
 
 .wf-btn:active {
@@ -156,19 +160,18 @@ body {
 }
 
 .wf-btn svg {
-  width: 19px;
-  height: 19px;
+  width: 18px;
+  height: 18px;
 }
 
 .wf-btn:disabled {
-  cursor: not-allowed;
   opacity: 0.35;
+  cursor: not-allowed;
 }
 
 .wf-btn-mic {
-  background: rgba(16, 185, 129, 0.18);
-  color: #34d399;
-  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.28);
+  background: rgba(16, 185, 129, 0.14);
+  color: rgba(52, 211, 153, 0.95);
 }
 
 .wf-btn-mic:hover:not(:disabled) {
@@ -176,9 +179,8 @@ body {
 }
 
 .wf-btn-stop {
-  background: rgba(239, 68, 68, 0.18);
-  color: #f87171;
-  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.14);
+  color: rgba(248, 113, 113, 0.95);
 }
 
 .wf-btn-stop:hover:not(:disabled) {
@@ -187,15 +189,13 @@ body {
 
 /* When listening, the mic button reads as "active" and the stop button as primary. */
 .wf-card.is-listening .wf-btn-mic {
-  background: rgba(16, 185, 129, 0.1);
-  color: rgba(52, 211, 153, 0.5);
-  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.16);
+  background: rgba(16, 185, 129, 0.22);
+  box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.3);
 }
 
 .wf-card.is-listening .wf-btn-stop {
-  background: rgba(239, 68, 68, 0.32);
-  color: #fca5a5;
-  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.2);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.3);
 }
 
 /* ─── Continue in app: full-width pill, secondary to capture ──────────── */
@@ -204,25 +204,22 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 6px;
   width: 100%;
-  height: 34px;
+  padding: 8px 10px;
   border: none;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(248, 250, 252, 0.9);
+  border-radius: 10px;
+  background: rgba(99, 102, 241, 0.14);
+  color: rgba(165, 180, 252, 0.95);
   font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
+  font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
-  transition: background 0.15s, color 0.15s, transform 0.05s;
+  transition: background 0.15s, transform 0.08s;
 }
 
 .wf-continue:hover {
-  background: rgba(255, 255, 255, 0.11);
-  color: #f8fafc;
+  background: rgba(99, 102, 241, 0.24);
 }
 
 .wf-continue:active {
@@ -230,13 +227,135 @@ body {
 }
 
 .wf-continue svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   transition: transform 0.15s;
 }
 
 .wf-continue:hover svg {
   transform: translateX(2px);
+}
+
+/* ─── Demo badge (shown when the simulator is driving planets) ─────────── */
+
+.wf-demo-badge {
+  position: absolute;
+  bottom: -22px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(251, 191, 36, 0.85);
+  background: rgba(15, 23, 42, 0.7);
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 3;
+}
+
+/* ─── Planet chip (used in planet.html — separate windows) ────────────── */
+/*
+ * The planet window body is fully transparent — only this chip has a
+ * visible background, so the planet looks like it's floating in space,
+ * not inside a box. This is the key difference from the single-window approach.
+ */
+
+.wf-planet {
+  width: 100vw;
+  height: 100vh;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(15, 23, 42, 0.88);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  /* Pop-in animation on window appear. */
+  opacity: 0;
+  animation: wf-planet-pop 0.4s cubic-bezier(0.22, 1.4, 0.36, 1) forwards;
+}
+
+@keyframes wf-planet-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.wf-planet-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wf-planet-icon {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  color: rgba(129, 140, 248, 0.9);
+}
+
+.wf-planet-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.wf-planet-label {
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: rgba(148, 163, 184, 0.85);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wf-planet-value {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: rgba(226, 232, 240, 0.96);
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* High-confidence fields get a subtle emerald accent border. */
+.wf-planet.is-confident {
+  border-color: rgba(16, 185, 129, 0.45);
+  box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.75),
+    0 0 0 1px rgba(16, 185, 129, 0.12);
+}
+
+.wf-planet.is-confident .wf-planet-icon {
+  color: rgba(52, 211, 153, 0.95);
+}
+
+/* Demo-mode badge so it's obvious the planet came from the simulator. */
+.wf-planet.is-demo {
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+.wf-planet.is-demo .wf-planet-icon {
+  color: rgba(251, 191, 36, 0.95);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -245,5 +364,10 @@ body {
   }
   .wf-continue svg {
     transition: none;
+  }
+  .wf-planet {
+    animation: none;
+    opacity: 1;
+    transform: scale(1);
   }
 }
