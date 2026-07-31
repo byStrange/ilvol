@@ -10,6 +10,31 @@ mod layer_shell;
 use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
 use config::ConfigState;
 
+/// Live data for every open planet window, keyed by field key.
+///
+/// Planet windows *pull* their initial data from here on load rather than
+/// relying on an event fired at creation time — a freshly built window has not
+/// registered its listeners yet, so a push would be dropped on the floor.
+#[derive(Default)]
+pub struct PlanetStore {
+    planets: Mutex<HashMap<String, serde_json::Value>>,
+}
+
+/// Authoritative screen position of the sun widget, in logical pixels.
+///
+/// On Wayland `outer_position()` is unsupported for layer-shell surfaces, so we
+/// can't ask the compositor where the widget is — we are the only ones who
+/// know, because we set the anchor margins ourselves.
+pub struct WidgetPos {
+    pos: Mutex<(i32, i32)>,
+}
+
+impl Default for WidgetPos {
+    fn default() -> Self {
+        Self { pos: Mutex::new((100, 100)) }
+    }
+}
+
 use ollama_rs::{
     generation::completion::{request::GenerationRequest, GenerationResponse},
     Ollama,
@@ -319,8 +344,37 @@ fn is_capture_running(state: State<'_, CaptureState>) -> bool {
     state.handle.lock().unwrap().is_some()
 }
 
+/// Logical size of the monitor the widget lives on.
+///
+/// `current_monitor()` reports `None` for a window that hasn't been mapped yet —
+/// which is exactly the state we're in when choosing where to place the widget —
+/// so fall through to the primary monitor and then to any monitor at all before
+/// giving up on a hardcoded guess.
+fn monitor_logical_size(window: &tauri::WebviewWindow) -> (i32, i32) {
+    let candidates = [
+        window.current_monitor().ok().flatten(),
+        window.primary_monitor().ok().flatten(),
+        window
+            .available_monitors()
+            .ok()
+            .and_then(|mons| mons.into_iter().next()),
+    ];
+
+    for mon in candidates.into_iter().flatten() {
+        let scale = mon.scale_factor();
+        let size = mon.size();
+        if scale > 0.0 && size.width > 0 && size.height > 0 {
+            return (
+                (size.width as f64 / scale).round() as i32,
+                (size.height as f64 / scale).round() as i32,
+            );
+        }
+    }
+    (1920, 1080)
+}
+
 #[tauri::command]
-fn toggle_widget(app: AppHandle) -> Result<(), String> {
+fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(), String> {
     let Some(window) = app.get_webview_window("widget") else {
         return Err("Widget window not found".to_string());
     };
@@ -336,17 +390,30 @@ fn toggle_widget(app: AppHandle) -> Result<(), String> {
         // Initialize layer-shell BEFORE showing — gtk_layer_init_for_window
         // asserts the window is not yet mapped. Doing this after show()
         // triggers "custom_shell_surface_init: assertion '!gtk_widget_get_mapped'"
-        // criticals. Position at a sensible default; JS will refine after load.
+        // criticals.
         if !layer_shell::is_layer_window(&app, "widget") {
-            // Place near top-right of the screen by default.
-            if let Ok(pos) = window.outer_position() {
-                let _ = layer_shell::init_layer_window(&app, "widget", pos.x, pos.y);
-            } else {
-                let _ = layer_shell::init_layer_window(&app, "widget", 100, 100);
-            }
+            // Centre the sun on its monitor so there is room for planets to
+            // orbit on every side. `outer_position()` is not supported for
+            // Wayland surfaces, so we choose the position rather than read it.
+            let (mon_w, mon_h) = monitor_logical_size(&window);
+            let x = ((mon_w - WIDGET_W) / 2).max(0);
+            let y = ((mon_h - WIDGET_H) / 2).max(0);
+            layer_shell::init_layer_window(&app, "widget", x, y, WIDGET_W, WIDGET_H)?;
+            *widget_pos.pos.lock().unwrap() = (x, y);
         }
         window.show().map_err(|e| e.to_string())?;
         let _ = window.set_focus();
+
+        // Tell the widget where it ended up. Its JS ran at app startup — long
+        // before this first show — so whatever geometry it read back then is
+        // stale, and planets would be laid out around the wrong origin.
+        let (x, y) = *widget_pos.pos.lock().unwrap();
+        let (screen_w, screen_h) = monitor_logical_size(&window);
+        let _ = app.emit_to(
+            "widget",
+            "widget:geometry",
+            WidgetGeometry { x, y, screen_w, screen_h },
+        );
     }
     Ok(())
 }
@@ -359,31 +426,72 @@ fn toggle_widget(app: AppHandle) -> Result<(), String> {
 // on each drag tick JS reads the sun's new position and tells Rust to
 // re-anchor every planet relative to it.
 
+/// Logical size of the sun widget — must match the `widget` window in
+/// tauri.conf.json and the SUN_W/SUN_H constants in widget.js.
+const WIDGET_W: i32 = 300;
+const WIDGET_H: i32 = 190;
+const PLANET_W: f64 = 150.0;
+const PLANET_H: f64 = 70.0;
+
 #[tauri::command]
-fn init_layer_widget(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
-    layer_shell::init_layer_window(&app, "widget", x, y)
+fn init_layer_widget(
+    app: AppHandle,
+    widget_pos: State<'_, WidgetPos>,
+    x: i32,
+    y: i32,
+) -> Result<(), String> {
+    layer_shell::init_layer_window(&app, "widget", x, y, WIDGET_W, WIDGET_H)?;
+    *widget_pos.pos.lock().unwrap() = (x, y);
+    Ok(())
 }
 
 /// Reposition the sun widget without re-initializing layer-shell. Used by
- /// JS during drag to update margins only.
+/// JS during drag to update margins only.
 #[tauri::command]
-fn move_layer_widget(app: AppHandle, x: i32, y: i32) -> Result<(), String> {
-    layer_shell::move_layer_window(&app, "widget", x, y)
+fn move_layer_widget(
+    app: AppHandle,
+    widget_pos: State<'_, WidgetPos>,
+    x: i32,
+    y: i32,
+) -> Result<(), String> {
+    layer_shell::move_layer_window(&app, "widget", x, y)?;
+    *widget_pos.pos.lock().unwrap() = (x, y);
+    Ok(())
+}
+
+/// The sun's position plus the usable screen size, so JS can lay planets out
+/// without running them off the edge of the monitor.
+#[derive(Serialize, Clone)]
+struct WidgetGeometry {
+    x: i32,
+    y: i32,
+    screen_w: i32,
+    screen_h: i32,
 }
 
 #[tauri::command]
-fn get_widget_position(app: AppHandle) -> Result<(i32, i32), String> {
+fn get_widget_position(
+    app: AppHandle,
+    widget_pos: State<'_, WidgetPos>,
+) -> Result<WidgetGeometry, String> {
     let win = app
         .get_webview_window("widget")
         .ok_or("Widget window not found")?;
-    let pos = win.outer_position().map_err(|e| e.to_string())?;
-    Ok((pos.x, pos.y))
+    let (x, y) = *widget_pos.pos.lock().unwrap();
+    let (screen_w, screen_h) = monitor_logical_size(&win);
+    Ok(WidgetGeometry { x, y, screen_w, screen_h })
 }
 
 /// Payload for creating a planet window. `key` is the field key (unique label),
 /// `label`/`icon`/`value`/`confidence` are display data, `x`/`y` is the screen
 /// position in logical px.
+///
+/// `rename_all = "camelCase"` is required: Tauri camel-cases *command
+/// parameter* names for you, but nested struct fields go straight through
+/// serde, so `isDemo` from JS would otherwise fail to match `is_demo` and the
+/// whole command would error out with "missing field".
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreatePlanetPayload {
     key: String,
     label: String,
@@ -396,51 +504,77 @@ struct CreatePlanetPayload {
 }
 
 #[tauri::command]
-fn create_planet_window(app: AppHandle, planet: CreatePlanetPayload) -> Result<(), String> {
+fn create_planet_window(
+    app: AppHandle,
+    store: State<'_, PlanetStore>,
+    planet: CreatePlanetPayload,
+) -> Result<(), String> {
     let label = format!("planet-{}", planet.key);
 
-    // If this planet window already exists, just move it.
+    let data = serde_json::json!({
+        "key": planet.key,
+        "label": planet.label,
+        "icon": planet.icon,
+        "value": planet.value,
+        "confidence": planet.confidence,
+        "is_demo": planet.is_demo,
+    });
+
+    // Publish the data *before* the window exists so that however fast the
+    // webview loads, `get_planet_data` already has an answer for it.
+    store
+        .planets
+        .lock()
+        .unwrap()
+        .insert(planet.key.clone(), data.clone());
+
+    // If this planet window already exists, just move it and push the update.
     if app.get_webview_window(&label).is_some() {
+        let _ = app.emit_to(&label, "planet:data", &data);
         return layer_shell::move_layer_window(&app, &label, planet.x, planet.y);
     }
 
+    // The key travels in the query string: the window needs to know which
+    // planet it is before it can ask for its data. Field keys are plain
+    // snake_case identifiers, so no escaping is needed.
     let win = tauri::WebviewWindowBuilder::new(
         &app,
         &label,
-        tauri::WebviewUrl::App("planet.html".into()),
+        tauri::WebviewUrl::App(format!("planet.html?key={}", planet.key).into()),
     )
     .title("LoadForm")
-    .inner_size(150.0, 70.0)
+    .inner_size(PLANET_W, PLANET_H)
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
     .resizable(false)
     .skip_taskbar(true)
     .shadow(false)
+    .focused(false) // never steal focus from the sun mid-drag
     .visible(false) // shown after layer-shell init
     .build()
     .map_err(|e| e.to_string())?;
 
     // Initialize layer-shell before showing so the compositor places it at
     // the exact position from the first frame.
-    layer_shell::init_layer_window(&app, &label, planet.x, planet.y)?;
-
-    // Send the planet its display data so it can render the chip.
-    let _ = app.emit_to(
+    layer_shell::init_layer_window(
+        &app,
         &label,
-        "planet:data",
-        serde_json::json!({
-            "key": planet.key,
-            "label": planet.label,
-            "icon": planet.icon,
-            "value": planet.value,
-            "confidence": planet.confidence,
-            "is_demo": planet.is_demo,
-        }),
-    );
+        planet.x,
+        planet.y,
+        PLANET_W as i32,
+        PLANET_H as i32,
+    )?;
 
     win.show().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Hand a freshly loaded planet window its display data. Pull-based by design —
+/// see `PlanetStore`.
+#[tauri::command]
+fn get_planet_data(store: State<'_, PlanetStore>, key: String) -> Option<serde_json::Value> {
+    store.planets.lock().unwrap().get(&key).cloned()
 }
 
 #[tauri::command]
@@ -450,29 +584,39 @@ fn move_planet_window(app: AppHandle, key: String, x: i32, y: i32) -> Result<(),
 }
 
 /// Update a planet's displayed value (called on re-extraction with new data).
+///
+/// Merges into the stored record rather than replacing it, so a value update
+/// doesn't wipe out the planet's label, icon or demo flag.
 #[tauri::command]
 fn update_planet_window(
     app: AppHandle,
+    store: State<'_, PlanetStore>,
     key: String,
     value: String,
     confidence: f64,
 ) -> Result<(), String> {
     let label = format!("planet-{key}");
-    let _ = app.emit_to(
-        &label,
-        "planet:data",
-        serde_json::json!({
-            "key": key,
-            "value": value,
-            "confidence": confidence,
-        }),
-    );
+
+    let merged = {
+        let mut planets = store.planets.lock().unwrap();
+        let entry = planets
+            .entry(key.clone())
+            .or_insert_with(|| serde_json::json!({ "key": key }));
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("value".into(), serde_json::json!(value));
+            obj.insert("confidence".into(), serde_json::json!(confidence));
+        }
+        entry.clone()
+    };
+
+    let _ = app.emit_to(&label, "planet:data", &merged);
     Ok(())
 }
 
 #[tauri::command]
-fn close_planet_window(app: AppHandle, key: String) -> Result<(), String> {
+fn close_planet_window(app: AppHandle, store: State<'_, PlanetStore>, key: String) -> Result<(), String> {
     let label = format!("planet-{key}");
+    store.planets.lock().unwrap().remove(&key);
     if let Some(win) = app.get_webview_window(&label) {
         win.close().map_err(|e| e.to_string())?;
     }
@@ -481,7 +625,8 @@ fn close_planet_window(app: AppHandle, key: String) -> Result<(), String> {
 
 /// Close every planet window at once (e.g. when capture stops or demo clears).
 #[tauri::command]
-fn close_all_planets(app: AppHandle) -> Result<(), String> {
+fn close_all_planets(app: AppHandle, store: State<'_, PlanetStore>) -> Result<(), String> {
+    store.planets.lock().unwrap().clear();
     for (label, win) in app.webview_windows() {
         if label.starts_with("planet-") {
             let _ = win.close();
@@ -567,6 +712,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(ConfigState::default())
         .manage(CaptureState::default())
+        .manage(PlanetStore::default())
+        .manage(WidgetPos::default())
         .invoke_handler(tauri::generate_handler![
             extract_load_data,
             copy_to_clipboard,
@@ -579,6 +726,7 @@ pub fn run() {
             move_layer_widget,
             get_widget_position,
             create_planet_window,
+            get_planet_data,
             move_planet_window,
             update_planet_window,
             close_planet_window,
