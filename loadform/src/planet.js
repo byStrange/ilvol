@@ -34,14 +34,21 @@ function tauriListen(event, handler) {
   return Promise.resolve();
 }
 
-window.addEventListener('DOMContentLoaded', () => {
+function tauriInvoke(cmd, args = {}) {
+  if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.core) {
+    return window.__TAURI__.core.invoke(cmd, args);
+  }
+  return Promise.reject(new Error('Tauri runtime not available.'));
+}
+
+window.addEventListener('DOMContentLoaded', async () => {
   const planet = document.getElementById('planet');
   const iconEl = document.getElementById('p-icon');
   const labelEl = document.getElementById('p-label');
   const valueEl = document.getElementById('p-value');
 
-  tauriListen('planet:data', (e) => {
-    const d = e.payload || {};
+  function render(d) {
+    if (!d) return;
     if (d.icon) {
       const path = FIELD_ICONS[d.icon] || FIELD_ICONS['map-pin'];
       iconEl.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">${path}</svg>`;
@@ -50,5 +57,20 @@ window.addEventListener('DOMContentLoaded', () => {
     if (d.value !== undefined) valueEl.innerHTML = escapeHtml(d.value);
     planet.classList.toggle('is-confident', (d.confidence ?? 0) >= 0.8);
     planet.classList.toggle('is-demo', !!d.is_demo);
-  });
+  }
+
+  // Listen first, so an update that lands during the initial fetch isn't lost.
+  await tauriListen('planet:data', (e) => render(e.payload));
+
+  // Pull our own data. The backend stores it before this window is even
+  // created, so this can't race — unlike an event pushed at creation time,
+  // which would arrive before this listener existed.
+  const key = new URLSearchParams(window.location.search).get('key');
+  if (key) {
+    try {
+      render(await tauriInvoke('get_planet_data', { key }));
+    } catch (err) {
+      console.error('planet get_planet_data failed:', err);
+    }
+  }
 });

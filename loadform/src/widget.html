@@ -14,11 +14,21 @@
   </head>
   <body>
     <!-- The sun: a single floating control surface. Planet chips are spawned
-         as separate layer-shell windows by the Rust backend (see widget.js). -->
-    <div id="widget" class="wf-card" data-tauri-drag-region>
+         as separate layer-shell windows by the Rust backend (see widget.js).
+
+         Note: no `data-tauri-drag-region` — this is a layer-shell surface, and
+         Tauri's drag region asks the compositor for an xdg_toplevel move that
+         layer-shell doesn't support. widget.js drags it by rewriting the anchor
+         margins instead. -->
+    <div id="widget" class="wf-card">
       <button id="wf-close" class="wf-close" title="Hide widget" aria-label="Hide widget">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 6 6 18" /><path d="m6 6 12 12" />
+        </svg>
+      </button>
+      <button id="wf-demo" class="wf-demo-btn" title="Toggle orbit demo" aria-label="Toggle orbit demo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3" /><ellipse cx="12" cy="12" rx="10" ry="4.5" />
         </svg>
       </button>
 

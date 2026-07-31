@@ -63,11 +63,30 @@ const SUN_W = 300;
 const SUN_H = 190;
 const SUN_CX = SUN_W / 2;
 const SUN_CY = SUN_H / 2;
-const ORBIT_INNER_R = 165;
-const ORBIT_OUTER_R = 215;
 const PLANET_W = 150;
 const PLANET_H = 70;
-const PLANETS_PER_RING = 8;
+
+// One perfect circle: every planet sits on the same radius, evenly spaced, so
+// the constellation reads as a single clean orbit rather than nested rings.
+//
+// One slot per field, starting at 12 o'clock and going clockwise. The radius
+// comes from the no-overlap constraint — the chord between adjacent slots,
+// 2·r·sin(π/slots), has to clear the planet width:
+//   2 · 390 · sin(180°/15) = 162px  >  150px wide  ✓
+const ORBIT_SLOTS = FIELDS.length;
+const TOTAL_SLOTS = ORBIT_SLOTS;
+const ORBIT_R_PREFERRED = 390;
+
+/**
+ * Orbit radius, shrunk if the monitor is too small to hold the full circle.
+ * Keeps the ring inside the screen instead of letting the clamp flatten one
+ * side of it against an edge.
+ */
+function orbitRadius() {
+  const fitsW = screenW / 2 - PLANET_W / 2 - 8;
+  const fitsH = screenH / 2 - PLANET_H / 2 - 8;
+  return Math.max(150, Math.min(ORBIT_R_PREFERRED, fitsW, fitsH));
+}
 
 // ─── State ────────────────────────────────────────────────────────────────
 
@@ -82,6 +101,27 @@ let demoTimer = null;
 let sunX = 100;
 let sunY = 100;
 
+// Monitor bounds, so planets can be clamped on screen.
+let screenW = 1920;
+let screenH = 1080;
+
+function applyGeometry(geo) {
+  if (!geo) return;
+  sunX = geo.x;
+  sunY = geo.y;
+  screenW = geo.screen_w;
+  screenH = geo.screen_h;
+}
+
+/** Re-read the sun's position and monitor bounds from the backend. */
+async function refreshGeometry() {
+  try {
+    applyGeometry(await tauriInvoke('get_widget_position'));
+  } catch (err) {
+    console.error('get_widget_position error:', err);
+  }
+}
+
 // Track which planet windows exist: key → { confidence, isDemo }
 const planets = new Map();
 
@@ -94,6 +134,7 @@ const placeholderEl = document.getElementById('wf-placeholder');
 const micBtn = document.getElementById('wf-mic');
 const stopBtn = document.getElementById('wf-stop');
 const closeBtn = document.getElementById('wf-close');
+const demoBtn = document.getElementById('wf-demo');
 const continueBtn = document.getElementById('wf-continue');
 const waveBars = Array.from(document.querySelectorAll('.wf-bar'));
 
@@ -146,38 +187,53 @@ function resetWave() {
 
 // ─── Orbit positioning ──────────────────────────────────────────────────
 //
-// Compute the screen position for a planet given its index among all filled
-// planets. Planets are distributed evenly on two rings.
+// Compute the screen position for a planet from the fixed slot it holds on the
+// orbit. All slots share one radius, so the planets form a single circle.
 
-function computePlanetPos(index) {
-  const ring = index < PLANETS_PER_RING ? 0 : 1;
-  const indexInRing = ring === 0 ? index : index - PLANETS_PER_RING;
-  const total = planets.size;
-  const countInRing = ring === 0
-    ? Math.min(total, PLANETS_PER_RING)
-    : total - PLANETS_PER_RING;
-  const r = ring === 0 ? ORBIT_INNER_R : ORBIT_OUTER_R;
-  const baseOffset = ring === 0
-    ? -Math.PI / 2
-    : -Math.PI / 2 + Math.PI / countInRing;
-  const angle = baseOffset + (indexInRing / countInRing) * Math.PI * 2;
+/**
+ * Screen position for a planet occupying a fixed slot on the orbit.
+ *
+ * Slots are fixed rather than redistributed across however many planets
+ * currently exist: a planet that has already popped in should stay put when the
+ * next field is extracted, not slide around the circle every time a sibling
+ * appears.
+ */
+function computePlanetPos(slot) {
+  const r = orbitRadius();
+  // 12 o'clock, then clockwise around the circle.
+  const angle = -Math.PI / 2 + (slot / ORBIT_SLOTS) * Math.PI * 2;
 
   // Planet center relative to sun's top-left.
   const cxRel = SUN_CX + Math.cos(angle) * r;
   const cyRel = SUN_CY + Math.sin(angle) * r;
 
-  // Convert to screen position (top-left of the planet window).
-  const x = sunX + cxRel - PLANET_W / 2;
-  const y = sunY + cyRel - PLANET_H / 2;
+  // Convert to screen position (top-left of the planet window), clamped so a
+  // planet never drifts off the edge of the monitor.
+  const x = clamp(sunX + cxRel - PLANET_W / 2, 0, screenW - PLANET_W);
+  const y = clamp(sunY + cyRel - PLANET_H / 2, 0, screenH - PLANET_H);
   return { x: Math.round(x), y: Math.round(y) };
+}
+
+function clamp(v, lo, hi) {
+  return Math.min(Math.max(v, lo), hi);
+}
+
+/** Lowest orbital slot not already taken, so freed slots get reused. */
+function allocateSlot() {
+  const taken = new Set([...planets.values()].map((p) => p.slot));
+  for (let i = 0; i < TOTAL_SLOTS; i++) {
+    if (!taken.has(i)) return i;
+  }
+  return null; // orbit full
 }
 
 /** Reposition ALL existing planets relative to the current sun position. */
 async function repositionAllPlanets() {
-  const keys = [...planets.keys()];
-  const tasks = keys.map((key, i) => {
-    const { x, y } = computePlanetPos(i);
-    return tauriInvoke('move_planet_window', { key, x, y }).catch(() => {});
+  const tasks = [...planets.entries()].map(([key, p]) => {
+    const { x, y } = computePlanetPos(p.slot);
+    return tauriInvoke('move_planet_window', { key, x, y }).catch((err) => {
+      console.error(`move_planet_window(${key}) failed:`, err);
+    });
   });
   await Promise.all(tasks);
 }
@@ -189,19 +245,28 @@ async function upsertPlanet(key, value, confidence, isDemo = false) {
   const field = FIELDS.find((f) => f.key === key);
   if (!field) return;
 
-  const existed = planets.has(key);
+  const existing = planets.get(key);
 
-  // Track the planet and get its index to compute position.
-  planets.set(key, { confidence, isDemo });
-  const index = [...planets.keys()].indexOf(key);
-  const { x, y } = computePlanetPos(index);
+  if (existing) {
+    // Same slot — an already-orbiting planet only changes its text.
+    if (existing.value === value && existing.confidence === confidence) return;
+    existing.value = value;
+    existing.confidence = confidence;
+    try {
+      await tauriInvoke('update_planet_window', { key, value, confidence });
+    } catch (err) {
+      console.error(`update_planet_window(${key}) failed:`, err);
+    }
+    return;
+  }
 
-  if (existed) {
-    // Update value + position.
-    await tauriInvoke('update_planet_window', { key, value, confidence }).catch(() => {});
-    await tauriInvoke('move_planet_window', { key, x, y }).catch(() => {});
-  } else {
-    // Create new planet window.
+  const slot = allocateSlot();
+  if (slot === null) return; // every orbital slot is occupied
+
+  planets.set(key, { slot, value, confidence, isDemo });
+  const { x, y } = computePlanetPos(slot);
+
+  try {
     await tauriInvoke('create_planet_window', {
       planet: {
         key,
@@ -213,9 +278,11 @@ async function upsertPlanet(key, value, confidence, isDemo = false) {
         x,
         y,
       },
-    }).catch(() => {});
-    // Reposition all planets since the index of some may have shifted.
-    await repositionAllPlanets();
+    });
+  } catch (err) {
+    // Roll the slot back so a failed planet doesn't leave a permanent hole.
+    planets.delete(key);
+    console.error(`create_planet_window(${key}) failed:`, err);
   }
 }
 
@@ -223,14 +290,21 @@ async function upsertPlanet(key, value, confidence, isDemo = false) {
 async function removePlanet(key) {
   if (!planets.has(key)) return;
   planets.delete(key);
-  await tauriInvoke('close_planet_window', { key }).catch(() => {});
-  await repositionAllPlanets();
+  try {
+    await tauriInvoke('close_planet_window', { key });
+  } catch (err) {
+    console.error(`close_planet_window(${key}) failed:`, err);
+  }
 }
 
 /** Close all planet windows. */
 async function closeAllPlanets() {
   planets.clear();
-  await tauriInvoke('close_all_planets').catch(() => {});
+  try {
+    await tauriInvoke('close_all_planets');
+  } catch (err) {
+    console.error('close_all_planets failed:', err);
+  }
 }
 
 // ─── load:fields handler ──────────────────────────────────────────────────
@@ -296,14 +370,17 @@ const DEMO_CONFIDENCE = {
 async function startDemo() {
   if (demoActive) return;
   demoActive = true;
+  demoBtn.classList.add('is-active');
   await closeAllPlanets();
+  // Make sure we orbit the sun's current position, not wherever it started.
+  await refreshGeometry();
 
   // Show demo badge.
   if (!document.getElementById('wf-demo-badge')) {
     const badge = document.createElement('div');
     badge.id = 'wf-demo-badge';
     badge.className = 'wf-demo-badge';
-    badge.textContent = 'Demo — press D to clear';
+    badge.textContent = 'Demo — tap the orbit icon to clear';
     card.appendChild(badge);
   }
 
@@ -323,6 +400,7 @@ async function startDemo() {
 
 async function stopDemo() {
   demoActive = false;
+  demoBtn.classList.remove('is-active');
   if (demoTimer) {
     clearTimeout(demoTimer);
     demoTimer = null;
@@ -420,83 +498,102 @@ async function pickDevice() {
 
 // ─── Drag tracking ────────────────────────────────────────────────────────
 //
-// The sun is a layer-shell window. The compositor doesn't move it when the
-// user drags (Tauri's startDragging uses Wayland's xdg_toplevel move, which
-// layer-shell surfaces don't support). Instead we implement drag manually:
-// pointerdown → track pointermove → update sun margins via init_layer_widget
-// → reposition planets.
+// The sun is a layer-shell window, so Tauri's `startDragging` is useless here:
+// it asks for an xdg_toplevel interactive move, which layer-shell surfaces
+// don't implement. We move the surface ourselves by rewriting its anchor
+// margins, and drag it by hand.
 //
-// We use `data-tauri-drag-region` as a fallback; but on layer-shell it may not
-// work, so we also implement explicit pointer-based drag.
+// The coordinate space matters. Under Wayland a client is never told where it
+// sits on screen, so `screenX`/`screenY` in WebKitGTK are *not* global — they
+// collapse onto the surface-local values. Differencing them against a drag-start
+// screenX therefore measures the pointer relative to a window that is itself
+// moving, which oscillates instead of tracking the cursor.
+//
+// So we work purely in surface-local coordinates and keep this invariant:
+//
+//     sunPos + grabOffset == pointerScreenPos
+//
+// Given a fresh local pointer reading, `sun + (local - grabOffset)` lands the
+// window exactly under the cursor's grab point. Because each reading is taken
+// against the position we most recently applied, the expression is
+// self-correcting: it converges rather than accumulating drift.
 
 let dragging = false;
-let dragStartScreenX = 0;
-let dragStartScreenY = 0;
-let dragStartSunX = 0;
-let dragStartSunY = 0;
+let grabOffsetX = 0;
+let grabOffsetY = 0;
+let lastLocalX = 0;
+let lastLocalY = 0;
 let dragRafId = null;
 
-async function onDragMove(e) {
+/** Apply the latest pointer reading to the sun's position, once per frame. */
+function flushDrag() {
+  dragRafId = null;
   if (!dragging) return;
-  const dx = e.screenX - dragStartScreenX;
-  const dy = e.screenY - dragStartScreenY;
-  sunX = dragStartSunX + dx;
-  sunY = dragStartSunY + dy;
 
-  // Throttle Rust calls with requestAnimationFrame.
-  if (dragRafId) return;
-  dragRafId = requestAnimationFrame(async () => {
-    dragRafId = null;
-    // Move the sun window to the new position.
-    tauriInvoke('move_layer_widget', { x: sunX, y: sunY }).catch(() => {});
-    // Move all planets to follow.
-    repositionAllPlanets();
+  const nextX = clamp(sunX + (lastLocalX - grabOffsetX), 0, screenW - SUN_W);
+  const nextY = clamp(sunY + (lastLocalY - grabOffsetY), 0, screenH - SUN_H);
+  if (nextX === sunX && nextY === sunY) return;
+  sunX = nextX;
+  sunY = nextY;
+
+  tauriInvoke('move_layer_widget', { x: sunX, y: sunY }).catch((err) => {
+    console.error('move_layer_widget failed:', err);
   });
+  // The planets follow the sun.
+  repositionAllPlanets();
 }
 
-function onDragEnd() {
+function onDragMove(e) {
   if (!dragging) return;
-  dragging = false;
-  if (dragRafId) {
+  // Record the freshest reading; the rAF flush consumes only the latest one so
+  // that queued events can't each apply the same delta.
+  lastLocalX = e.clientX;
+  lastLocalY = e.clientY;
+  if (dragRafId === null) dragRafId = requestAnimationFrame(flushDrag);
+}
+
+function onDragEnd(e) {
+  if (!dragging) return;
+  // Apply the last reading before tearing down, otherwise a pending frame is
+  // cancelled and the widget settles up to one tick behind the cursor.
+  if (dragRafId !== null) {
     cancelAnimationFrame(dragRafId);
     dragRafId = null;
+    flushDrag();
   }
-  // Final precise reposition.
-  tauriInvoke('move_layer_widget', { x: sunX, y: sunY }).catch(() => {});
+  dragging = false;
+
+  if (e && card.hasPointerCapture?.(e.pointerId)) {
+    card.releasePointerCapture(e.pointerId);
+  }
+  // Settle the planets on the final position.
   repositionAllPlanets();
 }
 
 function initDragTracking() {
-  // Use mousedown on the card (the drag region) to start drag.
-  card.addEventListener('mousedown', (e) => {
-    // Don't start drag when clicking buttons.
+  // Pointer events + an explicit capture, so motion keeps arriving even if the
+  // cursor briefly outruns the window during a fast drag.
+  card.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    // Don't hijack clicks on the controls.
     if (e.target.closest('button')) return;
     dragging = true;
-    dragStartScreenX = e.screenX;
-    dragStartScreenY = e.screenY;
-    dragStartSunX = sunX;
-    dragStartSunY = sunY;
+    grabOffsetX = e.clientX;
+    grabOffsetY = e.clientY;
+    lastLocalX = e.clientX;
+    lastLocalY = e.clientY;
+    // Capture keeps motion flowing if the cursor briefly outruns the window.
+    // Not fatal if the pointer id isn't capturable.
+    try {
+      card.setPointerCapture?.(e.pointerId);
+    } catch {
+      /* ignore */
+    }
     e.preventDefault();
   });
-  window.addEventListener('mousemove', onDragMove);
-  window.addEventListener('mouseup', onDragEnd);
-
-  // Touch support.
-  card.addEventListener('touchstart', (e) => {
-    if (e.target.closest('button')) return;
-    const t = e.touches[0];
-    dragging = true;
-    dragStartScreenX = t.screenX;
-    dragStartScreenY = t.screenY;
-    dragStartSunX = sunX;
-    dragStartSunY = sunY;
-  }, { passive: true });
-  window.addEventListener('touchmove', (e) => {
-    if (!dragging) return;
-    const t = e.touches[0];
-    onDragMove({ screenX: t.screenX, screenY: t.screenY });
-  }, { passive: true });
-  window.addEventListener('touchend', onDragEnd);
+  card.addEventListener('pointermove', onDragMove);
+  card.addEventListener('pointerup', onDragEnd);
+  card.addEventListener('pointercancel', onDragEnd);
 }
 
 // ─── Init ────────────────────────────────────────────────────────────────
@@ -504,6 +601,10 @@ function initDragTracking() {
 window.addEventListener('DOMContentLoaded', async () => {
   micBtn.addEventListener('click', startCapture);
   stopBtn.addEventListener('click', stopCapture);
+  demoBtn.addEventListener('click', () => {
+    if (demoActive) stopDemo();
+    else if (!isCapturing) startDemo();
+  });
   closeBtn.addEventListener('click', async () => {
     try {
       await tauriInvoke('toggle_widget');
@@ -530,19 +631,14 @@ window.addEventListener('DOMContentLoaded', async () => {
     console.error('Widget is_capture_running error:', err);
   }
 
-  // Read the sun's current screen position. Layer-shell init is now done
-  // by Rust in toggle_widget (before show) — JS only needs the position
-  // for drag tracking and planet placement.
-  try {
-    const [x, y] = await tauriInvoke('get_widget_position');
-    sunX = x;
-    sunY = y;
-  } catch (err) {
-    console.error('get_widget_position error:', err);
-  }
+  // Read the sun's current screen position and the monitor bounds. Layer-shell
+  // init is done by Rust in toggle_widget (before show) — JS only needs the
+  // geometry for drag tracking and planet placement.
+  await refreshGeometry();
 
   renderTranscript();
   initDragTracking();
+
 
   // Global events.
   await tauriListen('capture:state', (e) => onCaptureState(e.payload));
@@ -551,6 +647,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   await tauriListen('capture:error', onCaptureError);
   await tauriListen('audio:level', (e) => onAudioLevel(e.payload));
   await tauriListen('load:fields', (e) => onLoadFields(e.payload));
+
+  // The backend tells us where it placed the sun each time the widget is
+  // shown. This window's JS loads once at app startup, so without this the
+  // geometry read above would stay stuck at its pre-positioning default.
+  await tauriListen('widget:geometry', (e) => {
+    applyGeometry(e.payload);
+    repositionAllPlanets();
+  });
 
   // Demo toggle: press "D".
   window.addEventListener('keydown', (e) => {
