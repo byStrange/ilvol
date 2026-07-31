@@ -12,9 +12,9 @@
  * a solar system.
  *
  * ─── Demo mode ───────────────────────────────────────────────────────────
- * Press "D" while the widget is focused to run a simulated extraction: planets
- * pop in one-by-one as if a broker call were being transcribed. Press "D" again
- * to clear.
+ * Tap the orbit button (or press "D" while the widget has focus) to run a
+ * simulated extraction: planets pop in one-by-one as if a broker call were
+ * being transcribed. Tap it again to clear.
  */
 
 // ─── Tauri helpers ────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ const FIELDS = [
 //
 // Planet screen positions are computed relative to the sun's top-left corner.
 // The sun is ~300px wide × ~190px tall, so its center is roughly at (150, 95).
-// Planets sit on rings of given radius around that center.
+// Planets sit on a single circle of fixed radius around that center.
 
 const SUN_W = 300;
 const SUN_H = 190;
