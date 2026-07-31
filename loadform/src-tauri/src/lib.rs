@@ -5,7 +5,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 mod audio_capture;
 mod config;
+/// Wayland-only. Non-Linux targets position windows through `placement` alone.
+#[cfg(target_os = "linux")]
 mod layer_shell;
+mod placement;
 
 use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
 use config::ConfigState;
@@ -26,12 +29,24 @@ pub struct PlanetStore {
 /// can't ask the compositor where the widget is — we are the only ones who
 /// know, because we set the anchor margins ourselves.
 pub struct WidgetPos {
-    pos: Mutex<(i32, i32)>,
+    inner: Mutex<WidgetPlacement>,
+}
+
+struct WidgetPlacement {
+    x: i32,
+    y: i32,
+    /// Whether the widget has been placed already. Tracked here rather than
+    /// asked of the window system, both because the answer is
+    /// platform-specific and because on Linux the layer-shell init must happen
+    /// exactly once, while the window is still unmapped.
+    placed: bool,
 }
 
 impl Default for WidgetPos {
     fn default() -> Self {
-        Self { pos: Mutex::new((100, 100)) }
+        Self {
+            inner: Mutex::new(WidgetPlacement { x: 100, y: 100, placed: false }),
+        }
     }
 }
 
@@ -387,19 +402,22 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
             }
         }
     } else {
-        // Initialize layer-shell BEFORE showing — gtk_layer_init_for_window
-        // asserts the window is not yet mapped. Doing this after show()
-        // triggers "custom_shell_surface_init: assertion '!gtk_widget_get_mapped'"
-        // criticals.
-        if !layer_shell::is_layer_window(&app, "widget") {
-            // Centre the sun on its monitor so there is room for planets to
-            // orbit on every side. `outer_position()` is not supported for
-            // Wayland surfaces, so we choose the position rather than read it.
-            let (mon_w, mon_h) = monitor_logical_size(&window);
-            let x = ((mon_w - WIDGET_W) / 2).max(0);
-            let y = ((mon_h - WIDGET_H) / 2).max(0);
-            layer_shell::init_layer_window(&app, "widget", x, y, WIDGET_W, WIDGET_H)?;
-            *widget_pos.pos.lock().unwrap() = (x, y);
+        // Place the widget BEFORE showing it. On Linux this is where
+        // gtk_layer_init_for_window runs, and it asserts the window is not yet
+        // mapped — doing it after show() triggers
+        // "custom_shell_surface_init: assertion '!gtk_widget_get_mapped'".
+        {
+            let mut pos = widget_pos.inner.lock().unwrap();
+            if !pos.placed {
+                // Centre the sun on its monitor so there is room for planets to
+                // orbit on every side. `outer_position()` is not supported for
+                // Wayland surfaces, so we choose the position rather than read it.
+                let (mon_w, mon_h) = monitor_logical_size(&window);
+                let x = ((mon_w - WIDGET_W) / 2).max(0);
+                let y = ((mon_h - WIDGET_H) / 2).max(0);
+                placement::init_window(&app, "widget", x, y, WIDGET_W, WIDGET_H)?;
+                *pos = WidgetPlacement { x, y, placed: true };
+            }
         }
         window.show().map_err(|e| e.to_string())?;
         let _ = window.set_focus();
@@ -407,7 +425,10 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
         // Tell the widget where it ended up. Its JS ran at app startup — long
         // before this first show — so whatever geometry it read back then is
         // stale, and planets would be laid out around the wrong origin.
-        let (x, y) = *widget_pos.pos.lock().unwrap();
+        let (x, y) = {
+            let pos = widget_pos.inner.lock().unwrap();
+            (pos.x, pos.y)
+        };
         let (screen_w, screen_h) = monitor_logical_size(&window);
         let _ = app.emit_to(
             "widget",
@@ -420,11 +441,11 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
 
 // ─── Layer-shell orbit commands (Wayland-native window positioning) ────────
 //
-// On Wayland, regular windows can't be positioned by the app. We use the
-// wlr-layer-shell protocol (via gtk-layer-shell) to place the sun widget and
-// each planet chip at exact screen coordinates. The sun is draggable via JS;
-// on each drag tick JS reads the sun's new position and tells Rust to
-// re-anchor every planet relative to it.
+// The sun widget and each planet chip are placed at exact screen coordinates
+// through `placement`, which on Wayland means the wlr-layer-shell protocol and
+// elsewhere just the ordinary window API. The sun is draggable via JS; on each
+// drag tick JS reports the sun's new position and Rust re-anchors every planet
+// relative to it.
 
 /// Logical size of the sun widget — must match the `widget` window in
 /// tauri.conf.json and the SUN_W/SUN_H constants in widget.js.
@@ -440,13 +461,12 @@ fn init_layer_widget(
     x: i32,
     y: i32,
 ) -> Result<(), String> {
-    layer_shell::init_layer_window(&app, "widget", x, y, WIDGET_W, WIDGET_H)?;
-    *widget_pos.pos.lock().unwrap() = (x, y);
+    placement::init_window(&app, "widget", x, y, WIDGET_W, WIDGET_H)?;
+    *widget_pos.inner.lock().unwrap() = WidgetPlacement { x, y, placed: true };
     Ok(())
 }
 
-/// Reposition the sun widget without re-initializing layer-shell. Used by
-/// JS during drag to update margins only.
+/// Reposition the sun widget without re-placing it. Used by JS during a drag.
 #[tauri::command]
 fn move_layer_widget(
     app: AppHandle,
@@ -454,8 +474,10 @@ fn move_layer_widget(
     x: i32,
     y: i32,
 ) -> Result<(), String> {
-    layer_shell::move_layer_window(&app, "widget", x, y)?;
-    *widget_pos.pos.lock().unwrap() = (x, y);
+    placement::move_window(&app, "widget", x, y)?;
+    let mut pos = widget_pos.inner.lock().unwrap();
+    pos.x = x;
+    pos.y = y;
     Ok(())
 }
 
@@ -477,7 +499,10 @@ fn get_widget_position(
     let win = app
         .get_webview_window("widget")
         .ok_or("Widget window not found")?;
-    let (x, y) = *widget_pos.pos.lock().unwrap();
+    let (x, y) = {
+        let pos = widget_pos.inner.lock().unwrap();
+        (pos.x, pos.y)
+    };
     let (screen_w, screen_h) = monitor_logical_size(&win);
     Ok(WidgetGeometry { x, y, screen_w, screen_h })
 }
@@ -531,7 +556,7 @@ fn create_planet_window(
     // If this planet window already exists, just move it and push the update.
     if app.get_webview_window(&label).is_some() {
         let _ = app.emit_to(&label, "planet:data", &data);
-        return layer_shell::move_layer_window(&app, &label, planet.x, planet.y);
+        return placement::move_window(&app, &label, planet.x, planet.y);
     }
 
     // The key travels in the query string: the window needs to know which
@@ -557,7 +582,7 @@ fn create_planet_window(
 
     // Initialize layer-shell before showing so the compositor places it at
     // the exact position from the first frame.
-    layer_shell::init_layer_window(
+    placement::init_window(
         &app,
         &label,
         planet.x,
@@ -580,7 +605,7 @@ fn get_planet_data(store: State<'_, PlanetStore>, key: String) -> Option<serde_j
 #[tauri::command]
 fn move_planet_window(app: AppHandle, key: String, x: i32, y: i32) -> Result<(), String> {
     let label = format!("planet-{key}");
-    layer_shell::move_layer_window(&app, &label, x, y)
+    placement::move_window(&app, &label, x, y)
 }
 
 /// Update a planet's displayed value (called on re-extraction with new data).
