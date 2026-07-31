@@ -113,9 +113,23 @@ fn gtk_window_ptr(app: &AppHandle, label: &str) -> Result<GtkWindowPtr, String> 
 /// creation while it's still hidden). The window is anchored to the top-left
 /// corner of the output, with margins providing the absolute offset.
 ///
-/// `x`, `y` are in logical pixels.
-pub fn init_layer_window(app: &AppHandle, label: &str, x: i32, y: i32) -> Result<(), String> {
+/// `x`, `y`, `w`, `h` are in logical pixels.
+///
+/// The size must be applied here, not left to Tauri's `inner_size`. A
+/// layer-shell surface that is anchored to only two edges takes its size from
+/// the GtkWindow's *size request*, and `gtk_window_set_default_size` (what
+/// Tauri's builder sets) is not a size request — so the surface falls back to
+/// GTK's 200x200 default and ignores the size we asked for.
+pub fn init_layer_window(
+    app: &AppHandle,
+    label: &str,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> Result<(), String> {
     let ptr = gtk_window_ptr(app, label)?;
+    set_layer_window_size(app, label, w, h)?;
 
     unsafe {
         gtk_layer_init_for_window(ptr);
@@ -136,6 +150,29 @@ pub fn init_layer_window(app: &AppHandle, label: &str, x: i32, y: i32) -> Result
         gtk_layer_set_namespace(ptr, ns.as_ptr() as *const _);
         // Force the initial state to commit immediately.
         gtk_layer_try_force_commit(ptr);
+    }
+
+    Ok(())
+}
+
+/// Pin a layer-shell window to an exact logical size.
+///
+/// `set_size_request` is the knob that layer-shell size negotiation actually
+/// reads. We also force the child webview to the same request, otherwise the
+/// WebKitWebView's own natural size can push the surface back out.
+pub fn set_layer_window_size(app: &AppHandle, label: &str, w: i32, h: i32) -> Result<(), String> {
+    let window = app
+        .get_webview_window(label)
+        .ok_or_else(|| format!("Window '{label}' not found"))?;
+    let gtk_win: gtk::Window = window
+        .gtk_window()
+        .map_err(|e| e.to_string())?
+        .upcast();
+
+    gtk_win.set_size_request(w, h);
+    gtk_win.resize(w, h);
+    for child in gtk_win.children() {
+        child.set_size_request(w, h);
     }
 
     Ok(())
