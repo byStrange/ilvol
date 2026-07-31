@@ -51,12 +51,12 @@ impl AppConfig {
     pub fn is_valid(&self) -> Result<(), String> {
         if self.deepgram_api_key.is_empty() {
             return Err(
-                "DEEPGRAM_API_KEY not set. Please create a .env file in the app folder.".to_string());
+                "Deepgram API key not set. Please sign in to fetch your keys from Supabase.".to_string());
         }
         // API key only required for remote Ollama endpoints
         if !self.is_local_ollama() && self.ollama_api_key.is_empty() {
             return Err(
-                "OLLAMA_API_KEY not set (required for remote Ollama). For local Ollama, set OLLAMA_BASE_URL=http://localhost:11434".to_string());
+                "Ollama API key not set (required for remote Ollama). For local Ollama, set OLLAMA_BASE_URL=http://localhost:11434".to_string());
         }
         Ok(())
     }
