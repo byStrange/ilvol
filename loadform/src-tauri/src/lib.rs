@@ -528,8 +528,18 @@ struct CreatePlanetPayload {
     y: i32,
 }
 
+/// Spawn (or refresh) the window for one planet.
+///
+/// **This command must stay `async`.** Tauri runs a synchronous command on the
+/// main thread, inside the IPC callback of the webview that invoked it — and on
+/// Windows, building a webview from inside another webview's callback deadlocks
+/// the WebView2 message loop (wry#583). The whole app hangs hard: no repaint, no
+/// input, kill-from-Task-Manager territory. Marking the command `async` moves it
+/// onto the async runtime, so `build()` runs off the main thread and the event
+/// loop stays free to service window creation. GTK/WebKitGTK on Linux has no
+/// such re-entrancy problem, which is why this only ever bit on Windows.
 #[tauri::command]
-fn create_planet_window(
+async fn create_planet_window(
     app: AppHandle,
     store: State<'_, PlanetStore>,
     planet: CreatePlanetPayload,
@@ -576,20 +586,29 @@ fn create_planet_window(
     .skip_taskbar(true)
     .shadow(false)
     .focused(false) // never steal focus from the sun mid-drag
-    .visible(false) // shown after layer-shell init
+    .visible(false) // shown once it has been placed
     .build()
     .map_err(|e| e.to_string())?;
 
-    // Initialize layer-shell before showing so the compositor places it at
-    // the exact position from the first frame.
-    placement::init_window(
+    // Position it before showing so it appears at the right spot on the first
+    // frame — on Wayland that means promoting it to a layer-shell surface,
+    // which additionally *requires* the window to still be unmapped.
+    //
+    // Tear the window back down if placement fails: it is still hidden, and a
+    // hidden-but-registered window would make every later create for this key
+    // take the "already exists" branch above and silently move an invisible
+    // window instead of ever showing a planet again.
+    if let Err(err) = placement::init_window(
         &app,
         &label,
         planet.x,
         planet.y,
         PLANET_W as i32,
         PLANET_H as i32,
-    )?;
+    ) {
+        let _ = win.destroy();
+        return Err(err);
+    }
 
     win.show().map_err(|e| e.to_string())?;
     Ok(())
