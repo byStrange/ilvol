@@ -301,8 +301,12 @@ body {
   width: 100vw;
   height: 100vh;
   box-sizing: border-box;
-  padding: 8px 10px;
-  border-radius: 12px;
+  /* Sized for the 112×60 planet window (PLANET_W/PLANET_H in widget.js and
+     lib.rs). The chip was shrunk so the orbit could be pulled in close to the
+     sun: the ring's radius is floored by collisions between neighbouring
+     chips, so a narrower chip is what buys a tighter circle. */
+  padding: 6px 8px;
+  border-radius: 10px;
   background: rgba(15, 23, 42, 0.88);
   backdrop-filter: blur(18px) saturate(150%);
   -webkit-backdrop-filter: blur(18px) saturate(150%);
@@ -310,7 +314,7 @@ body {
   box-shadow: 0 10px 26px -12px rgba(0, 0, 0, 0.75);
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
   /* Pop-in animation on window appear. */
   opacity: 0;
   animation: wf-planet-pop 0.4s cubic-bezier(0.22, 1.4, 0.36, 1) forwards;
@@ -333,13 +337,13 @@ body {
 .wf-planet-head {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .wf-planet-icon {
   flex: 0 0 auto;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   color: rgba(129, 140, 248, 0.9);
 }
 
@@ -349,7 +353,7 @@ body {
 }
 
 .wf-planet-label {
-  font-size: 8.5px;
+  font-size: 8px;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -360,13 +364,15 @@ body {
 }
 
 .wf-planet-value {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
-  line-height: 1.3;
+  line-height: 1.28;
   color: rgba(226, 232, 240, 0.96);
   word-break: break-word;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  /* Two lines, not three: 6+6 padding + 12 head + 2 gap + 2×12.8 = 51px, which
+     is what fits in a 60px-tall chip. */
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }

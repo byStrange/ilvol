@@ -63,19 +63,36 @@ const SUN_W = 300;
 const SUN_H = 190;
 const SUN_CX = SUN_W / 2;
 const SUN_CY = SUN_H / 2;
-const PLANET_W = 150;
-const PLANET_H = 70;
+const PLANET_W = 112;
+const PLANET_H = 60;
 
 // One perfect circle: every planet sits on the same radius, evenly spaced, so
 // the constellation reads as a single clean orbit rather than nested rings.
 //
-// One slot per field, starting at 12 o'clock and going clockwise. The radius
-// comes from the no-overlap constraint — the chord between adjacent slots,
-// 2·r·sin(π/slots), has to clear the planet width:
-//   2 · 390 · sin(180°/15) = 162px  >  150px wide  ✓
+// One slot per field, starting at 12 o'clock and going clockwise. The radius is
+// floored by collisions between neighbouring chips — and the chip is a
+// rectangle, not a point, so the test that matters is whether two chips' boxes
+// overlap: they clear each other only if |Δx| > PLANET_W or |Δy| > PLANET_H.
+// (The chord 2·r·sin(π/slots) is the older, looser estimate. It overstates the
+// clearance, because the chord runs diagonally while the chips are
+// axis-aligned. Judging by the chord is how the previous 390/150×70 pairing
+// ended up ~2px *overlapping* at the tightest pair, near 3 and 9 o'clock.)
+//
+// The tightest pair at 15 slots sits just past the top and bottom of the ring,
+// where neighbours are side by side and so need the full chip width between
+// them. Solving that numerically:
+//
+//   chip 150×70 → r ≥ 411      chip 118×60 → r ≥ 327
+//   chip 112×60 → r ≥ 311      chip 100×56 → r ≥ 280
+//
+// So a tighter orbit has to be bought with a narrower chip. 112×60 at r = 315
+// leaves ~8px between neighbours and pulls the ring's inner edge to ~107px off
+// the sun's corner, down from ~177px — a 742×690 constellation instead of
+// 930×850. Tighter than this means giving up the single clean circle for two
+// alternating rings, or clipping values harder than two lines of ~35 chars.
 const ORBIT_SLOTS = FIELDS.length;
 const TOTAL_SLOTS = ORBIT_SLOTS;
-const ORBIT_R_PREFERRED = 390;
+const ORBIT_R_PREFERRED = 315;
 
 /**
  * Orbit radius, shrunk if the monitor is too small to hold the full circle.
@@ -105,12 +122,22 @@ let sunY = 100;
 let screenW = 1920;
 let screenH = 1080;
 
+// Which placement backend Rust compiled in. Decides how a drag reads pointer
+// coordinates — see the drag section below. The backend overwrites this on the
+// first geometry read; the user-agent guess only covers the window before that
+// lands, and matches how `placement` picks its own implementation (Linux →
+// layer-shell, everything else → the plain window API).
+let usesLayerShell = navigator.userAgent.includes('Linux');
+
 function applyGeometry(geo) {
   if (!geo) return;
   sunX = geo.x;
   sunY = geo.y;
   screenW = geo.screen_w;
   screenH = geo.screen_h;
+  if (typeof geo.uses_layer_shell === 'boolean') {
+    usesLayerShell = geo.uses_layer_shell;
+  }
 }
 
 /** Re-read the sun's position and monitor bounds from the backend. */
@@ -503,11 +530,16 @@ async function pickDevice() {
 // don't implement. We move the surface ourselves by rewriting its anchor
 // margins, and drag it by hand.
 //
-// The coordinate space matters. Under Wayland a client is never told where it
-// sits on screen, so `screenX`/`screenY` in WebKitGTK are *not* global — they
-// collapse onto the surface-local values. Differencing them against a drag-start
-// screenX therefore measures the pointer relative to a window that is itself
-// moving, which oscillates instead of tracking the cursor.
+// The coordinate space matters, and the right answer differs per platform —
+// which is why `usesLayerShell` comes from the backend rather than being
+// assumed.
+//
+// ── Layer-shell (Wayland) ──
+// A client is never told where it sits on screen, so `screenX`/`screenY` in
+// WebKitGTK are *not* global — they collapse onto the surface-local values.
+// Differencing them against a drag-start screenX therefore measures the pointer
+// relative to a window that is itself moving, which oscillates instead of
+// tracking the cursor.
 //
 // So we work purely in surface-local coordinates and keep this invariant:
 //
@@ -517,30 +549,66 @@ async function pickDevice() {
 // window exactly under the cursor's grab point. Because each reading is taken
 // against the position we most recently applied, the expression is
 // self-correcting: it converges rather than accumulating drift.
+//
+// ── Ordinary windows (Windows, macOS) ──
+// That same self-correction is a feedback loop, and here it goes unstable. It
+// only converges if the window has *already* moved by the time the next pointer
+// reading is taken, which holds on Wayland because the compositor re-bases
+// surface-local coordinates as part of the move. On Windows the move is an
+// async IPC hop to the main thread, so pointermove keeps arriving measured
+// against the window's OLD position: every frame re-applies a delta an earlier
+// frame already applied. The sun overshoots, the correction overshoots back,
+// and it rings — a 10px nudge turns into a jitter that walks the widget away
+// and eventually pins it in a corner against the clamp.
+//
+// Here `screenX`/`screenY` genuinely are global, so there is no need for the
+// feedback trick and no loop to destabilise: the position is a pure function of
+// how far the pointer has travelled since the grab. Latency makes the window
+// lag the cursor by a frame; it can never make it oscillate.
 
 let dragging = false;
+// Layer-shell: the pointer's surface-local grab point.
 let grabOffsetX = 0;
 let grabOffsetY = 0;
 let lastLocalX = 0;
 let lastLocalY = 0;
+// Screen-space: where the pointer and the sun each were when the drag started.
+let dragStartScreenX = 0;
+let dragStartScreenY = 0;
+let dragOriginX = 0;
+let dragOriginY = 0;
+let lastScreenX = 0;
+let lastScreenY = 0;
 let dragRafId = null;
+
+/** Where the sun wants to be, given the freshest pointer reading. */
+function dragTarget() {
+  if (usesLayerShell) {
+    return {
+      x: sunX + (lastLocalX - grabOffsetX),
+      y: sunY + (lastLocalY - grabOffsetY),
+    };
+  }
+  return {
+    x: dragOriginX + (lastScreenX - dragStartScreenX),
+    y: dragOriginY + (lastScreenY - dragStartScreenY),
+  };
+}
 
 /** Apply the latest pointer reading to the sun's position, once per frame. */
 function flushDrag() {
   dragRafId = null;
   if (!dragging) return;
 
-  const nextX = clamp(sunX + (lastLocalX - grabOffsetX), 0, screenW - SUN_W);
-  const nextY = clamp(sunY + (lastLocalY - grabOffsetY), 0, screenH - SUN_H);
+  const target = dragTarget();
+  const nextX = clamp(Math.round(target.x), 0, screenW - SUN_W);
+  const nextY = clamp(Math.round(target.y), 0, screenH - SUN_H);
   if (nextX === sunX && nextY === sunY) return;
   sunX = nextX;
   sunY = nextY;
 
-  tauriInvoke('move_layer_widget', { x: sunX, y: sunY }).catch((err) => {
-    console.error('move_layer_widget failed:', err);
-  });
-  // The planets follow the sun.
-  repositionAllPlanets();
+  // Sun and planets in a single call — see moveOrbit.
+  moveOrbit();
 }
 
 function onDragMove(e) {
@@ -549,6 +617,8 @@ function onDragMove(e) {
   // that queued events can't each apply the same delta.
   lastLocalX = e.clientX;
   lastLocalY = e.clientY;
+  lastScreenX = e.screenX;
+  lastScreenY = e.screenY;
   if (dragRafId === null) dragRafId = requestAnimationFrame(flushDrag);
 }
 
@@ -566,8 +636,30 @@ function onDragEnd(e) {
   if (e && card.hasPointerCapture?.(e.pointerId)) {
     card.releasePointerCapture(e.pointerId);
   }
-  // Settle the planets on the final position.
-  repositionAllPlanets();
+  // Settle the whole constellation on the final position.
+  moveOrbit();
+}
+
+/**
+ * Move the sun and every planet in ONE IPC call.
+ *
+ * The naive version fires 1 + N invokes per frame — sixteen round trips at
+ * 60fps with a full orbit, each landing as a separate window-move on the main
+ * thread. That backs up the message loop on Windows (where every move is a real
+ * SetWindowPos) and lets the planets visibly lag behind the sun mid-drag, since
+ * they arrive as their own event-loop turns. One command applies the whole
+ * constellation in a single pass instead.
+ */
+function moveOrbit() {
+  const moves = [...planets.entries()].map(([key, p]) => ({
+    key,
+    ...computePlanetPos(p.slot),
+  }));
+  return tauriInvoke('move_orbit', { x: sunX, y: sunY, planets: moves }).catch(
+    (err) => {
+      console.error('move_orbit failed:', err);
+    },
+  );
 }
 
 function initDragTracking() {
@@ -582,6 +674,15 @@ function initDragTracking() {
     grabOffsetY = e.clientY;
     lastLocalX = e.clientX;
     lastLocalY = e.clientY;
+    dragStartScreenX = e.screenX;
+    dragStartScreenY = e.screenY;
+    lastScreenX = e.screenX;
+    lastScreenY = e.screenY;
+    // The screen-space path measures from where the sun was at grab time, so
+    // this has to be the sun's real position — not a value a previous drag left
+    // behind. `sunX`/`sunY` is authoritative: JS drives placement, Rust mirrors.
+    dragOriginX = sunX;
+    dragOriginY = sunY;
     // Capture keeps motion flowing if the cursor briefly outruns the window.
     // Not fatal if the pointer id isn't capturable.
     try {
