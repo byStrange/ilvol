@@ -433,7 +433,13 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
         let _ = app.emit_to(
             "widget",
             "widget:geometry",
-            WidgetGeometry { x, y, screen_w, screen_h },
+            WidgetGeometry {
+                x,
+                y,
+                screen_w,
+                screen_h,
+                uses_layer_shell: USES_LAYER_SHELL,
+            },
         );
     }
     Ok(())
@@ -451,8 +457,8 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
 /// tauri.conf.json and the SUN_W/SUN_H constants in widget.js.
 const WIDGET_W: i32 = 300;
 const WIDGET_H: i32 = 190;
-const PLANET_W: f64 = 150.0;
-const PLANET_H: f64 = 70.0;
+const PLANET_W: f64 = 112.0;
+const PLANET_H: f64 = 60.0;
 
 #[tauri::command]
 fn init_layer_widget(
@@ -466,30 +472,64 @@ fn init_layer_widget(
     Ok(())
 }
 
-/// Reposition the sun widget without re-placing it. Used by JS during a drag.
+/// One planet's new position within a [`move_orbit`] batch.
+#[derive(Deserialize)]
+struct PlanetMove {
+    key: String,
+    x: i32,
+    y: i32,
+}
+
+/// Move the sun and every planet in one call, in one event-loop turn.
+///
+/// The drag loop used to issue `move_layer_widget` plus one `move_planet_window`
+/// per planet every frame — sixteen IPC round trips at 60fps with a full orbit,
+/// each a separate window-move on the main thread. Batching keeps the message
+/// loop clear (every move is a real `SetWindowPos` on Windows) and moves the
+/// whole constellation together, so the planets don't trail the sun.
+///
+/// A planet that has closed since JS built the batch is skipped rather than
+/// failing the call: the sun's own move matters more than a stale entry.
 #[tauri::command]
-fn move_layer_widget(
+fn move_orbit(
     app: AppHandle,
     widget_pos: State<'_, WidgetPos>,
     x: i32,
     y: i32,
+    planets: Vec<PlanetMove>,
 ) -> Result<(), String> {
     placement::move_window(&app, "widget", x, y)?;
-    let mut pos = widget_pos.inner.lock().unwrap();
-    pos.x = x;
-    pos.y = y;
+    {
+        let mut pos = widget_pos.inner.lock().unwrap();
+        pos.x = x;
+        pos.y = y;
+    }
+    for planet in planets {
+        let label = format!("planet-{}", planet.key);
+        let _ = placement::move_window(&app, &label, planet.x, planet.y);
+    }
     Ok(())
 }
 
 /// The sun's position plus the usable screen size, so JS can lay planets out
 /// without running them off the edge of the monitor.
+///
+/// `uses_layer_shell` tells the drag tracker which coordinate space it can
+/// trust. It has to come from here rather than a JS user-agent sniff, because
+/// the answer *is* which `placement` backend was compiled in — see the drag
+/// section of widget.js.
 #[derive(Serialize, Clone)]
 struct WidgetGeometry {
     x: i32,
     y: i32,
     screen_w: i32,
     screen_h: i32,
+    uses_layer_shell: bool,
 }
+
+/// True when window placement goes through wlr-layer-shell (Linux) rather than
+/// the ordinary top-level window API.
+const USES_LAYER_SHELL: bool = cfg!(target_os = "linux");
 
 #[tauri::command]
 fn get_widget_position(
@@ -504,7 +544,13 @@ fn get_widget_position(
         (pos.x, pos.y)
     };
     let (screen_w, screen_h) = monitor_logical_size(&win);
-    Ok(WidgetGeometry { x, y, screen_w, screen_h })
+    Ok(WidgetGeometry {
+        x,
+        y,
+        screen_w,
+        screen_h,
+        uses_layer_shell: USES_LAYER_SHELL,
+    })
 }
 
 /// Payload for creating a planet window. `key` is the field key (unique label),
@@ -767,7 +813,7 @@ pub fn run() {
             is_capture_running,
             toggle_widget,
             init_layer_widget,
-            move_layer_widget,
+            move_orbit,
             get_widget_position,
             create_planet_window,
             get_planet_data,
