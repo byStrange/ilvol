@@ -871,6 +871,13 @@ function resetForm() {
   // Restore empty placeholder field cards so the right column stays populated.
   renderEmptyFieldCards();
 
+  // Extractions accumulate in the backend across a session, so the load being
+  // cleared has to be cleared there too — otherwise the next conversation's
+  // first extraction merges into this one's fields.
+  tauriInvoke('reset_extraction').catch((err) => {
+    console.error('reset_extraction failed:', err);
+  });
+
   // The floating widget is showing planets for the load we just cleared. It
   // owns its own slot bookkeeping, so it has to retract them itself — closing
   // the windows from here would leave its map pointing at dead windows.
@@ -1013,6 +1020,13 @@ async function openLoad(id) {
   currentConfidence = load.confidence || {};
   accumulatedTranscript = load.transcript || '';
   transcriptWords = accumulatedTranscript ? accumulatedTranscript.split(/\s+/).filter(Boolean) : [];
+
+  // We're on a different load now. Re-extracting from here should read this
+  // load's transcript on its own, not fold into whatever the backend was still
+  // accumulating for the session we just navigated away from.
+  tauriInvoke('reset_extraction').catch((err) => {
+    console.error('reset_extraction failed:', err);
+  });
 
   renderFieldCards(currentExtractedData, currentConfidence);
   renderOutput();
