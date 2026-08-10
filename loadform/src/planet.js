@@ -58,13 +58,32 @@ window.addEventListener('DOMContentLoaded', async () => {
     planet.classList.toggle('is-confident', (d.confidence ?? 0) >= 0.8);
   }
 
+  // Which planet this window is. Read before the listener is attached, because
+  // the listener needs it to tell its own updates apart — see below.
+  const key = new URLSearchParams(window.location.search).get('key');
+
   // Listen first, so an update that lands during the initial fetch isn't lost.
-  await tauriListen('planet:data', (e) => render(e.payload));
+  //
+  // Every `planet:data` event reaches every planet window, whatever label Rust
+  // addressed it to. `listen()` registers with target `Any` unless told
+  // otherwise, and Tauri delivers to an `Any` listener *regardless of the
+  // emit's filter* — `match_any_or_filter` in tauri/src/event/listener.rs
+  // short-circuits on it. `emit_to("planet-rate", ...)` is therefore a
+  // broadcast as far as these windows are concerned.
+  //
+  // So the key in the payload is what tells this window an update is its own.
+  // Without the check every chip in the orbit repaints as whichever field was
+  // updated last, and a ring of a dozen planets turns into a dozen copies of
+  // the rate — each one still at its own slot, so it reads as duplicates.
+  await tauriListen('planet:data', (e) => {
+    const data = e.payload;
+    if (key && data?.key && data.key !== key) return;
+    render(data);
+  });
 
   // Pull our own data. The backend stores it before this window is even
   // created, so this can't race — unlike an event pushed at creation time,
   // which would arrive before this listener existed.
-  const key = new URLSearchParams(window.location.search).get('key');
   if (key) {
     try {
       render(await tauriInvoke('get_planet_data', { key }));

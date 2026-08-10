@@ -18,6 +18,13 @@ use config::{ConfigState, LlmProvider};
 /// Planet windows *pull* their initial data from here on load rather than
 /// relying on an event fired at creation time — a freshly built window has not
 /// registered its listeners yet, so a push would be dropped on the floor.
+///
+/// Every record must carry its own `key`. `planet:data` is addressed to one
+/// window with `emit_to`, but that only filters *Rust* listeners: a frontend
+/// `listen()` registers with target `Any`, which Tauri delivers to whatever the
+/// emit was filtered to (`match_any_or_filter` in tauri's event/listener.rs).
+/// Each window therefore receives every planet's updates and matches on `key`
+/// to find its own — drop the field and the whole orbit renders as one chip.
 #[derive(Default)]
 pub struct PlanetStore {
     planets: Mutex<HashMap<String, serde_json::Value>>,
