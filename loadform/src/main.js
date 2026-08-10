@@ -43,6 +43,16 @@ function tauriInvoke(cmd, args = {}) {
   throw new Error('Tauri runtime not available. Run inside Tauri app.');
 }
 
+/** Broadcast an app-wide event. Best-effort: outside Tauri this is a no-op. */
+function tauriEmit(event, payload) {
+  if (typeof window.__TAURI__ !== 'undefined' && window.__TAURI__.event) {
+    return window.__TAURI__.event.emit(event, payload).catch((err) => {
+      console.error(`emit(${event}) failed:`, err);
+    });
+  }
+  return Promise.resolve();
+}
+
 // ─── Floating Widget Window ─────────────────────────────────────────────────
 //
 // The widget is a second Tauri window (label "widget") declared in
@@ -120,7 +130,10 @@ let currentExtractedData = null;
 let currentConfidence = {};
 let devices = [];
 let selectedDeviceId = '';
-let autoExtractEnabled = false;
+// Auto-fill is the default experience: the form (and the widget's orbiting
+// planets) populate while the broker is still talking, rather than waiting for
+// an explicit Extract. The checkbox in index.html ships `checked` to match.
+let autoExtractEnabled = true;
 let lastExtractTime = 0;
 const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
 
@@ -189,6 +202,7 @@ const els = {
   settingsModal: document.getElementById('settings-modal'),
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
+  llmProviderSelect: document.getElementById('llm-provider-select'),
   logoutBtn: document.getElementById('logout-btn'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
@@ -524,6 +538,10 @@ function enterListeningUI() {
   els.transcriptArea.classList.remove('hidden');
   els.transcriptArea.classList.add('has-text');
   isCapturing = true;
+  // Each session gets a fresh auto-extract clock. Otherwise a capture started
+  // shortly after the previous one ended inherits its last-extract timestamp
+  // and sits behind the debounce gate, so the first planets arrive late.
+  lastExtractTime = 0;
   setStatus('listening');
   resetMeters();
   els.meterContainer.classList.remove('hidden');
@@ -853,6 +871,11 @@ function resetForm() {
   // Restore empty placeholder field cards so the right column stays populated.
   renderEmptyFieldCards();
 
+  // The floating widget is showing planets for the load we just cleared. It
+  // owns its own slot bookkeeping, so it has to retract them itself — closing
+  // the windows from here would leave its map pointing at dead windows.
+  tauriEmit('load:reset');
+
   setStatus('idle');
 }
 
@@ -1095,6 +1118,7 @@ function hideAuthModal() {
 function showSettingsModal() {
   if (!currentUser) return;
   els.settingsUserEmail.textContent = currentUser.email || 'Unknown';
+  refreshLlmProviderUI();
   els.settingsModal.classList.remove('hidden');
 }
 
@@ -1182,26 +1206,81 @@ async function handleAuthSubmit(e) {
 async function fetchAndSetApiKeys() {
   try {
     const { data, error } = await supabase.from('api_keys').select('*');
-    if (error) {
-      console.error('Failed to fetch API keys:', error);
-      return;
-    }
+    if (error) throw error;
 
-    const keys = { deepgram: '', ollama: '' };
+    const keys = { deepgram: '', ollama: '', gemini: '' };
     for (const row of data) {
       if (row.provider === 'deepgram') keys.deepgram = row.key_value;
       if (row.provider === 'ollama') keys.ollama = row.key_value;
+      if (row.provider === 'gemini') keys.gemini = row.key_value;
     }
 
     await tauriInvoke('set_api_keys', {
       payload: {
         deepgram_key: keys.deepgram,
         ollama_key: keys.ollama,
+        // Omitted rather than sent empty when the table has no `gemini` row:
+        // the Rust side treats an absent key as "leave what's there", which is
+        // what keeps a dev-time GEMINI_API_KEY from being wiped on sign-in.
+        ...(keys.gemini ? { gemini_key: keys.gemini } : {}),
       },
     });
     console.log('API keys pushed to Rust backend');
   } catch (err) {
     console.error('Failed to set API keys in Rust:', err);
+  }
+
+  // Replay the saved provider once the keys have landed — and deliberately
+  // outside the try, so a Supabase hiccup doesn't silently drop the app back
+  // onto Ollama. Rust rebuilds its config empty on every launch, so without
+  // this the choice wouldn't survive a restart.
+  await applyStoredLlmProvider();
+}
+
+// ─── LLM provider selection ─────────────────────────────────────────────────
+
+const LLM_PROVIDER_KEY = 'lf-llm-provider';
+
+// Push the persisted choice into Rust and reflect it in the settings select.
+async function applyStoredLlmProvider() {
+  const stored = localStorage.getItem(LLM_PROVIDER_KEY);
+  if (!stored) return;
+  try {
+    await tauriInvoke('set_llm_provider', { provider: stored });
+  } catch (err) {
+    console.error('Failed to restore LLM provider:', err);
+    // Only forget the choice when Rust actually rejected the *value* — outside
+    // the Tauri runtime (plain `vite dev` in a browser) the invoke always
+    // fails, and wiping the preference there would be lost user intent.
+    if (typeof window.__TAURI__ !== 'undefined') {
+      localStorage.removeItem(LLM_PROVIDER_KEY);
+    }
+    return;
+  }
+  if (els.llmProviderSelect) els.llmProviderSelect.value = stored;
+}
+
+// Sync the select with whatever Rust currently believes, so the modal never
+// shows a provider that isn't actually in use (e.g. after a failed restore).
+async function refreshLlmProviderUI() {
+  if (!els.llmProviderSelect) return;
+  try {
+    const provider = await tauriInvoke('get_llm_provider');
+    if (provider) els.llmProviderSelect.value = provider;
+  } catch (err) {
+    console.error('Failed to read LLM provider:', err);
+  }
+}
+
+async function onLlmProviderChange(e) {
+  const provider = e.target.value;
+  try {
+    await tauriInvoke('set_llm_provider', { provider });
+    localStorage.setItem(LLM_PROVIDER_KEY, provider);
+  } catch (err) {
+    console.error('Failed to set LLM provider:', err);
+    // Snap the control back rather than leave it lying about the active model.
+    refreshLlmProviderUI();
   }
 }
 
@@ -1266,6 +1345,14 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsBtn.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
+
+  // Show the saved provider immediately; initAuth's key fetch is what actually
+  // hands it to Rust, and that only resolves once Supabase answers.
+  if (els.llmProviderSelect) {
+    const storedProvider = localStorage.getItem(LLM_PROVIDER_KEY);
+    if (storedProvider) els.llmProviderSelect.value = storedProvider;
+    els.llmProviderSelect.addEventListener('change', onLlmProviderChange);
+  }
 
   // Floating widget: show/hide the always-on-top capture remote.
   if (els.widgetBtn) {
