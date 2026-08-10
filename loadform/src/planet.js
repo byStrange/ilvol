@@ -56,7 +56,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (d.label) labelEl.textContent = d.label;
     if (d.value !== undefined) valueEl.innerHTML = escapeHtml(d.value);
     planet.classList.toggle('is-confident', (d.confidence ?? 0) >= 0.8);
-    planet.classList.toggle('is-demo', !!d.is_demo);
   }
 
   // Listen first, so an update that lands during the initial fetch isn't lost.

@@ -99,6 +99,15 @@
           <p id="settings-user-email" class="text-sm text-slate-200 truncate"></p>
         </div>
 
+        <div class="mb-5 p-3 rounded-xl bg-slate-950/40 border border-white/5">
+          <label class="block text-xs text-slate-500 mb-1.5" for="llm-provider-select">Extraction model</label>
+          <select id="llm-provider-select" class="lf-select">
+            <option value="ollama">Ollama Cloud</option>
+            <option value="gemini">Google Gemini</option>
+          </select>
+          <p class="text-xs text-slate-500 mt-2">Which LLM turns the transcript into load fields.</p>
+        </div>
+
         <div class="flex gap-3">
           <button
             id="settings-close-btn"
@@ -277,7 +286,8 @@
                       <span class="lf-toggle-sub">Triggers on conversation pauses</span>
                     </span>
                     <span class="lf-toggle-switch">
-                      <input id="auto-extract-checkbox" type="checkbox" />
+                      <!-- On by default — mirrors `autoExtractEnabled` in main.js. -->
+                      <input id="auto-extract-checkbox" type="checkbox" checked />
                       <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
                     </span>
                   </label>

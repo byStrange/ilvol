@@ -11,7 +11,7 @@ mod layer_shell;
 mod placement;
 
 use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
-use config::ConfigState;
+use config::{ConfigState, LlmProvider};
 
 /// Live data for every open planet window, keyed by field key.
 ///
@@ -133,25 +133,106 @@ struct OllamaGenerateResponse {
     response: String,
 }
 
+// ─── Gemini API Types ───────────────────────────────────────────────────────
+//
+// Modelled as concrete structs rather than poked at through `serde_json::Value`
+// so a shape change in the API fails loudly at parse time with a message that
+// names the missing field, instead of turning into a `None` three layers deep.
+
+#[derive(Debug, Serialize)]
+struct GeminiGenerateRequest {
+    contents: Vec<GeminiContent>,
+    #[serde(rename = "generationConfig")]
+    generation_config: GeminiGenerationConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiContent {
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GeminiPart {
+    text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiGenerationConfig {
+    #[serde(rename = "responseMimeType")]
+    response_mime_type: String,
+    temperature: f32,
+}
+
+/// `content` and `finishReason` are optional because a candidate that trips a
+/// safety filter comes back with a reason and no parts at all.
+#[derive(Debug, Deserialize)]
+struct GeminiCandidate {
+    #[serde(default)]
+    content: Option<GeminiContent>,
+    #[serde(rename = "finishReason", default)]
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiGenerateResponse {
+    #[serde(default)]
+    candidates: Vec<GeminiCandidate>,
+    /// Present instead of `candidates` when the whole prompt is blocked.
+    #[serde(rename = "promptFeedback", default)]
+    prompt_feedback: Option<GeminiPromptFeedback>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiPromptFeedback {
+    #[serde(rename = "blockReason", default)]
+    block_reason: Option<String>,
+}
+
+impl GeminiGenerateResponse {
+    /// Pulls the model text out of the first candidate, or explains why there
+    /// isn't one. A blocked response is a 200 OK with an empty candidate list,
+    /// so this is the only place the failure is visible.
+    fn into_text(self) -> Result<String, String> {
+        let Some(candidate) = self.candidates.into_iter().next() else {
+            let reason = self
+                .prompt_feedback
+                .and_then(|f| f.block_reason)
+                .unwrap_or_else(|| "no reason given".to_string());
+            return Err(format!(
+                "Gemini returned no candidates (likely a safety block): {}",
+                reason
+            ));
+        };
+
+        let finish_reason = candidate.finish_reason.clone();
+        candidate
+            .content
+            .map(|c| {
+                c.parts
+                    .into_iter()
+                    .map(|p| p.text)
+                    .collect::<Vec<_>>()
+                    .join("")
+            })
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "Gemini candidate contained no text (finishReason: {})",
+                    finish_reason.unwrap_or_else(|| "unknown".to_string())
+                )
+            })
+    }
+}
+
 // ─── LLM Extraction ─────────────────────────────────────────────────────────
 
-#[tauri::command]
-async fn extract_load_data(
-    config: State<'_, ConfigState>,
-    app: AppHandle,
-    req: ExtractionRequest,
-) -> Result<LoadFormDataWithConfidence, String> {
-    let (base_url, model, api_key, is_local) = {
-        let cfg = config.config.lock().unwrap();
-        (
-            cfg.ollama_base_url.clone(),
-            cfg.ollama_model.clone(),
-            cfg.ollama_api_key.clone(),
-            cfg.is_local_ollama(),
-        )
-    };
-
-    let prompt = format!(
+/// The extraction prompt, identical for every provider.
+///
+/// Split out of `extract_load_data` so that adding a backend can never fork the
+/// wording — the field list and the confidence contract are what the whole app's
+/// parsing depends on, and two copies would drift.
+fn extraction_prompt(transcript: &str) -> String {
+    format!(
         r#"You are a logistics data extraction assistant. Given a broker conversation transcript, extract the following fields:
 - pickup_location: where the load picks up (city, state)
 - pickup_datetime: when the load picks up (day, date, time)
@@ -210,49 +291,171 @@ Return ONLY valid JSON in this exact format with no markdown code blocks:
 
 Transcript:
 {}"#,
-        req.transcript
-    );
+        transcript
+    )
+}
 
-    let raw_content = if is_local {
-        // Local Ollama — native ollama-rs
+/// Ollama completion, local or remote. Returns the model's raw text.
+///
+/// Local goes through `ollama-rs` because it handles the daemon's defaults for
+/// us; remote hits `/api/generate` directly since ollama.com needs a bearer
+/// token the crate doesn't plumb through the same way.
+async fn generate_ollama(
+    base_url: String,
+    model: String,
+    api_key: String,
+    is_local: bool,
+    prompt: String,
+) -> Result<String, String> {
+    if is_local {
         let ollama = Ollama::default();
         let request = GenerationRequest::new(model, prompt);
         let response: GenerationResponse = ollama
             .generate(request)
             .await
             .map_err(|e| format!("Local Ollama generation failed: {}", e))?;
-        response.response
-    } else {
-        // Remote Ollama — native /api/generate with auth
-        let api_req = OllamaGenerateRequest {
+        return Ok(response.response);
+    }
+
+    let api_req = OllamaGenerateRequest {
+        model,
+        prompt,
+        stream: false,
+    };
+
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
+
+    let mut builder = client.post(&url).json(&api_req);
+    if !api_key.is_empty() {
+        builder = builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = builder.send().await.map_err(|e| format!("HTTP error: {}", e))?;
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    if !status.is_success() {
+        return Err(format!("Ollama API error {}: {}", status, body_text));
+    }
+
+    let api_response: OllamaGenerateResponse = serde_json::from_str(&body_text)
+        .map_err(|e| format!("Failed to parse Ollama response: {}. Body: {}", e, body_text))?;
+
+    Ok(api_response.response)
+}
+
+/// Gemini completion via `generateContent`. Returns the model's raw text.
+///
+/// `responseMimeType: application/json` is what keeps this compatible with the
+/// shared parsing below: without it Gemini reliably wraps its answer in a
+/// markdown JSON fence, and while the fence stripper handles that, JSON mode also
+/// constrains decoding so the model can't trail off into prose after the object.
+/// The low temperature is for the same reason — this is an extraction task, and
+/// creative rephrasing of a pickup city is a bug.
+async fn generate_gemini(model: String, api_key: String, prompt: String) -> Result<String, String> {
+    // Caught here rather than let Google answer with a generic 400, which reads
+    // as "invalid key" and sends users hunting for a typo that isn't there.
+    if api_key.is_empty() {
+        return Err(
+            "Gemini API key not set. Add a 'gemini' row to your Supabase api_keys table, or switch the LLM provider back to Ollama in Settings."
+                .to_string(),
+        );
+    }
+
+    let api_req = GeminiGenerateRequest {
+        contents: vec![GeminiContent {
+            parts: vec![GeminiPart { text: prompt }],
+        }],
+        generation_config: GeminiGenerationConfig {
+            response_mime_type: "application/json".to_string(),
+            temperature: 0.2,
+        },
+    };
+
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        model
+    );
+
+    // The key goes in a header rather than the `?key=` query parameter Google's
+    // older samples use, so it can't leak into proxy or request logs.
+    let response = reqwest::Client::new()
+        .post(&url)
+        .header("x-goog-api-key", &api_key)
+        .json(&api_req)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP error: {}", e))?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))?;
+
+    if !status.is_success() {
+        // Google's error body carries the actionable part (expired key, model
+        // not found, quota), so surface it verbatim instead of just the code.
+        return Err(format!("Gemini API error {}: {}", status, body_text));
+    }
+
+    let api_response: GeminiGenerateResponse = serde_json::from_str(&body_text)
+        .map_err(|e| format!("Failed to parse Gemini response: {}. Body: {}", e, body_text))?;
+
+    api_response.into_text()
+}
+
+#[tauri::command]
+async fn extract_load_data(
+    config: State<'_, ConfigState>,
+    app: AppHandle,
+    req: ExtractionRequest,
+) -> Result<LoadFormDataWithConfidence, String> {
+    let prompt = extraction_prompt(&req.transcript);
+
+    // Snapshot everything the call needs while the lock is held: the config
+    // mutex is a std `Mutex`, so it must not be alive across the await below.
+    enum Backend {
+        Ollama {
+            base_url: String,
+            model: String,
+            api_key: String,
+            is_local: bool,
+        },
+        Gemini {
+            model: String,
+            api_key: String,
+        },
+    }
+
+    let backend = {
+        let cfg = config.config.lock().unwrap();
+        match cfg.provider {
+            LlmProvider::Ollama => Backend::Ollama {
+                base_url: cfg.ollama_base_url.clone(),
+                model: cfg.ollama_model.clone(),
+                api_key: cfg.ollama_api_key.clone(),
+                is_local: cfg.is_local_ollama(),
+            },
+            LlmProvider::Gemini => Backend::Gemini {
+                model: cfg.gemini_model.clone(),
+                api_key: cfg.gemini_api_key.clone(),
+            },
+        }
+    };
+
+    let raw_content = match backend {
+        Backend::Ollama {
+            base_url,
             model,
-            prompt,
-            stream: false,
-        };
-
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-
-        let mut builder = client.post(&url).json(&api_req);
-        if !api_key.is_empty() {
-            builder = builder.header("Authorization", format!("Bearer {}", api_key));
-        }
-
-        let response = builder.send().await.map_err(|e| format!("HTTP error: {}", e))?;
-        let status = response.status();
-        let body_text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response body: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!("Ollama API error {}: {}", status, body_text));
-        }
-
-        let api_response: OllamaGenerateResponse = serde_json::from_str(&body_text)
-            .map_err(|e| format!("Failed to parse Ollama response: {}. Body: {}", e, body_text))?;
-
-        api_response.response
+            api_key,
+            is_local,
+        } => generate_ollama(base_url, model, api_key, is_local, prompt).await?,
+        Backend::Gemini { model, api_key } => generate_gemini(model, api_key, prompt).await?,
     };
 
     // The LLM response may contain markdown code blocks — strip them
@@ -557,10 +760,11 @@ fn get_widget_position(
 /// `label`/`icon`/`value`/`confidence` are display data, `x`/`y` is the screen
 /// position in logical px.
 ///
-/// `rename_all = "camelCase"` is required: Tauri camel-cases *command
-/// parameter* names for you, but nested struct fields go straight through
-/// serde, so `isDemo` from JS would otherwise fail to match `is_demo` and the
-/// whole command would error out with "missing field".
+/// `rename_all = "camelCase"` is kept deliberately even though every field here
+/// is currently a single word: Tauri camel-cases *command parameter* names for
+/// you, but nested struct fields go straight through serde, so the first
+/// multi-word field added below would silently fail to match and the whole
+/// command would error out with "missing field".
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreatePlanetPayload {
@@ -569,7 +773,6 @@ struct CreatePlanetPayload {
     icon: String,
     value: String,
     confidence: f64,
-    is_demo: bool,
     x: i32,
     y: i32,
 }
@@ -598,7 +801,6 @@ async fn create_planet_window(
         "icon": planet.icon,
         "value": planet.value,
         "confidence": planet.confidence,
-        "is_demo": planet.is_demo,
     });
 
     // Publish the data *before* the window exists so that however fast the
@@ -676,7 +878,7 @@ fn move_planet_window(app: AppHandle, key: String, x: i32, y: i32) -> Result<(),
 /// Update a planet's displayed value (called on re-extraction with new data).
 ///
 /// Merges into the stored record rather than replacing it, so a value update
-/// doesn't wipe out the planet's label, icon or demo flag.
+/// doesn't wipe out the planet's label or icon.
 #[tauri::command]
 fn update_planet_window(
     app: AppHandle,
@@ -713,7 +915,7 @@ fn close_planet_window(app: AppHandle, store: State<'_, PlanetStore>, key: Strin
     Ok(())
 }
 
-/// Close every planet window at once (e.g. when capture stops or demo clears).
+/// Close every planet window at once (e.g. when capture starts or a load is reset).
 #[tauri::command]
 fn close_all_planets(app: AppHandle, store: State<'_, PlanetStore>) -> Result<(), String> {
     store.planets.lock().unwrap().clear();
@@ -776,6 +978,10 @@ fn close_main(app: AppHandle) -> Result<(), String> {
 struct SetApiKeysPayload {
     deepgram_key: String,
     ollama_key: String,
+    /// Optional so that a client built before Gemini existed — or a Supabase
+    /// project with no `gemini` row — still satisfies the payload.
+    #[serde(default)]
+    gemini_key: Option<String>,
 }
 
 #[tauri::command]
@@ -785,7 +991,25 @@ fn set_api_keys(
 ) -> Result<(), String> {
     let mut cfg = state.config.lock().unwrap();
     cfg.set_keys(payload.deepgram_key, payload.ollama_key);
+    if let Some(gemini) = payload.gemini_key {
+        cfg.set_gemini_key(gemini);
+    }
     Ok(())
+}
+
+/// Switch the extraction backend. Called from the settings modal; the frontend
+/// mirrors the choice into `localStorage` and replays it on the next launch,
+/// since the config itself is rebuilt empty every start.
+#[tauri::command]
+fn set_llm_provider(state: State<'_, ConfigState>, provider: String) -> Result<(), String> {
+    let parsed = LlmProvider::parse(&provider)?;
+    state.config.lock().unwrap().provider = parsed;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_llm_provider(state: State<'_, ConfigState>) -> String {
+    state.config.lock().unwrap().provider.as_str().to_string()
 }
 
 #[tauri::command]
@@ -793,6 +1017,7 @@ fn logout(state: State<'_, ConfigState>) -> Result<(), String> {
     let mut cfg = state.config.lock().unwrap();
     cfg.deepgram_api_key.clear();
     cfg.ollama_api_key.clear();
+    cfg.gemini_api_key.clear();
     Ok(())
 }
 
@@ -826,6 +1051,8 @@ pub fn run() {
             toggle_maximize_main,
             close_main,
             set_api_keys,
+            set_llm_provider,
+            get_llm_provider,
             logout,
         ])
         .run(tauri::generate_context!())
@@ -916,5 +1143,65 @@ mod tests {
 
         let parsed: LoadFormDataWithConfidence = serde_json::from_str(cleaned).unwrap();
         assert_eq!(parsed.data.pickup_location, "Test");
+    }
+
+    /// Guards the field names in the Gemini response structs against the real
+    /// envelope — the nesting is four levels deep and every level is optional
+    /// in at least one failure mode, so a rename would otherwise only show up
+    /// as a runtime parse error against a live API we can't hit in CI.
+    #[test]
+    fn test_gemini_response_text_extraction() {
+        let raw = r#"{
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            { "text": "{\"data\":{\"pickup_location\":\"Amarillo, TX\"}}" }
+                        ],
+                        "role": "model"
+                    },
+                    "finishReason": "STOP",
+                    "avgLogprobs": -0.12
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 812,
+                "candidatesTokenCount": 214,
+                "totalTokenCount": 1026
+            },
+            "modelVersion": "gemini-2.5-flash",
+            "responseId": "abc123"
+        }"#;
+
+        let response: GeminiGenerateResponse = serde_json::from_str(raw).unwrap();
+        let text = response.into_text().unwrap();
+        assert_eq!(text, r#"{"data":{"pickup_location":"Amarillo, TX"}}"#);
+
+        // And the extracted text is what the shared parser consumes.
+        let parsed: LoadFormDataWithConfidence = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.data.pickup_location, "Amarillo, TX");
+    }
+
+    #[test]
+    fn test_gemini_empty_candidates_is_error() {
+        // A safety block is an HTTP 200 with no candidates, so this must not be
+        // mistaken for an empty extraction.
+        let raw = r#"{
+            "promptFeedback": { "blockReason": "SAFETY" },
+            "modelVersion": "gemini-2.5-flash"
+        }"#;
+
+        let response: GeminiGenerateResponse = serde_json::from_str(raw).unwrap();
+        let err = response.into_text().unwrap_err();
+        assert!(err.contains("no candidates"), "unexpected error: {}", err);
+        assert!(err.contains("SAFETY"), "block reason lost: {}", err);
+    }
+
+    #[test]
+    fn test_llm_provider_parsing() {
+        assert_eq!(LlmProvider::parse("ollama").unwrap(), LlmProvider::Ollama);
+        assert_eq!(LlmProvider::parse(" Gemini ").unwrap(), LlmProvider::Gemini);
+        assert_eq!(LlmProvider::Gemini.as_str(), "gemini");
+        assert!(LlmProvider::parse("gpt-4").is_err());
     }
 }

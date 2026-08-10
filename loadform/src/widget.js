@@ -11,10 +11,11 @@
  * re-anchor every planet relative to it — so the planets follow the sun like
  * a solar system.
  *
- * ─── Demo mode ───────────────────────────────────────────────────────────
- * Tap the orbit button (or press "D" while the widget has focus) to run a
- * simulated extraction: planets pop in one-by-one as if a broker call were
- * being transcribed. Tap it again to clear.
+ * ─── What drives the planets ─────────────────────────────────────────────
+ * The `load:fields` event, broadcast by the backend every time an extraction
+ * completes. With auto-fill on (the default), the main window re-extracts on
+ * conversation pauses while capture is running, so planets pop into orbit as
+ * the broker keeps talking — one per field the model has become able to fill.
  */
 
 // ─── Tauri helpers ────────────────────────────────────────────────────────
@@ -111,8 +112,6 @@ let isCapturing = false;
 let selectedDeviceId = null;
 let finalText = '';
 let interimText = '';
-let demoActive = false;
-let demoTimer = null;
 
 // Sun position on screen (logical px). Updated during drag and on init.
 let sunX = 100;
@@ -149,7 +148,7 @@ async function refreshGeometry() {
   }
 }
 
-// Track which planet windows exist: key → { confidence, isDemo }
+// Track which planet windows exist: key → { slot, value, confidence }
 const planets = new Map();
 
 // ─── DOM ─────────────────────────────────────────────────────────────────
@@ -161,7 +160,6 @@ const placeholderEl = document.getElementById('wf-placeholder');
 const micBtn = document.getElementById('wf-mic');
 const stopBtn = document.getElementById('wf-stop');
 const closeBtn = document.getElementById('wf-close');
-const demoBtn = document.getElementById('wf-demo');
 const continueBtn = document.getElementById('wf-continue');
 const waveBars = Array.from(document.querySelectorAll('.wf-bar'));
 
@@ -268,7 +266,7 @@ async function repositionAllPlanets() {
 // ─── Planet window management ────────────────────────────────────────────
 
 /** Create or update a planet window for a filled field. */
-async function upsertPlanet(key, value, confidence, isDemo = false) {
+async function upsertPlanet(key, value, confidence) {
   const field = FIELDS.find((f) => f.key === key);
   if (!field) return;
 
@@ -290,7 +288,7 @@ async function upsertPlanet(key, value, confidence, isDemo = false) {
   const slot = allocateSlot();
   if (slot === null) return; // every orbital slot is occupied
 
-  planets.set(key, { slot, value, confidence, isDemo });
+  planets.set(key, { slot, value, confidence });
   const { x, y } = computePlanetPos(slot);
 
   try {
@@ -301,7 +299,6 @@ async function upsertPlanet(key, value, confidence, isDemo = false) {
         icon: field.icon,
         value,
         confidence,
-        isDemo,
         x,
         y,
       },
@@ -336,112 +333,83 @@ async function closeAllPlanets() {
 
 // ─── load:fields handler ──────────────────────────────────────────────────
 
-async function onLoadFields(payload) {
+/**
+ * Values that mean "the model had nothing to say", spelled the way models
+ * actually spell it.
+ *
+ * An empty string is the honest answer, but the extraction prompt itself asks
+ * for `"none"` when there are no intermediate stops — and a model that has been
+ * told to fill every key will happily write "N/A" or "not mentioned" into the
+ * rest. In the main form those land in a labelled input and read fine; in orbit
+ * they'd be a chip floating in space announcing that nothing is known, which is
+ * worse than no chip at all.
+ */
+const EMPTY_ANSWERS = new Set([
+  'none',
+  'n/a',
+  'na',
+  'null',
+  'unknown',
+  'not mentioned',
+  'not specified',
+  'not provided',
+  '-',
+  '--',
+]);
+
+/** The value to orbit for a field, or '' if the field is effectively unfilled. */
+function planetValue(raw) {
+  const val = (raw ?? '').toString().trim();
+  return EMPTY_ANSWERS.has(val.toLowerCase()) ? '' : val;
+}
+
+/**
+ * Serialises `load:fields` handling.
+ *
+ * Under auto-fill the event now arrives unattended every few seconds, and a
+ * manual Extract can land on top of an auto one. Two overlapping runs would
+ * interleave their creates and removes — one retracting a planet the other is
+ * still building — and leave `planets` describing windows that don't exist.
+ * Chaining keeps each extraction's view of the orbit whole.
+ */
+let loadFieldsQueue = Promise.resolve();
+
+function onLoadFields(payload) {
+  loadFieldsQueue = loadFieldsQueue
+    .then(() => applyLoadFields(payload))
+    .catch((err) => {
+      console.error('load:fields handling failed:', err);
+    });
+  return loadFieldsQueue;
+}
+
+async function applyLoadFields(payload) {
   const data = payload?.data || payload?.payload?.data || {};
   const conf = payload?.confidence || payload?.payload?.confidence || {};
-  const keys = Object.keys(data);
-  if (!keys.length) return;
+  if (!Object.keys(data).length) return;
 
-  // Upsert filled fields.
+  // Upsert filled fields. Sequential rather than parallel: each one builds a
+  // real webview, and they read as planets arriving one after another — which
+  // is the point, since extraction is incremental.
   for (const field of FIELDS) {
-    const val = (data[field.key] || '').toString().trim();
+    const val = planetValue(data[field.key]);
     if (val) {
       await upsertPlanet(field.key, val, Number(conf[field.key] || 0));
     }
   }
 
-  // Remove planets whose fields are now empty.
+  // Retract planets whose fields the latest extraction no longer fills.
   for (const key of [...planets.keys()]) {
-    if (!data[key] || !data[key].toString().trim()) {
+    if (!planetValue(data[key])) {
       await removePlanet(key);
     }
   }
-}
-
-// ─── Demo mode ──────────────────────────────────────────────────────────
-
-const DEMO_LOAD = {
-  pickup_location: 'Amarillo, TX',
-  pickup_datetime: 'Tue 7/30, 8:00 AM',
-  pickup_type: 'Live load',
-  pickup_window: 'FCFS 6am-4pm',
-  delivery_location: 'Tulsa, OK',
-  delivery_datetime: 'Thu 8/1, 6:00 AM',
-  delivery_type: 'Live unload',
-  delivery_window: 'Appointment 9:00 AM',
-  commodity: 'Frozen chicken',
-  equipment_type: 'Reefer',
-  rate: '$2.80/mile ($2,100 total)',
-  weight: '43,000 lbs',
-  trailer_instructions: 'Empty in → live load → live unload',
-  additional_notes: 'Lumpers required, T-check at gate',
-};
-
-const DEMO_CONFIDENCE = {
-  pickup_location: 0.95,
-  pickup_datetime: 0.87,
-  pickup_type: 0.82,
-  pickup_window: 0.9,
-  delivery_location: 0.98,
-  delivery_datetime: 0.91,
-  delivery_type: 0.85,
-  delivery_window: 0.88,
-  commodity: 0.82,
-  equipment_type: 0.99,
-  rate: 0.89,
-  weight: 0.95,
-  trailer_instructions: 0.75,
-  additional_notes: 0.75,
-};
-
-async function startDemo() {
-  if (demoActive) return;
-  demoActive = true;
-  demoBtn.classList.add('is-active');
-  await closeAllPlanets();
-  // Make sure we orbit the sun's current position, not wherever it started.
-  await refreshGeometry();
-
-  // Show demo badge.
-  if (!document.getElementById('wf-demo-badge')) {
-    const badge = document.createElement('div');
-    badge.id = 'wf-demo-badge';
-    badge.className = 'wf-demo-badge';
-    badge.textContent = 'Demo — tap the orbit icon to clear';
-    card.appendChild(badge);
-  }
-
-  const keys = Object.keys(DEMO_LOAD);
-  let i = 0;
-  const step = async () => {
-    if (!demoActive || i >= keys.length) {
-      demoTimer = null;
-      return;
-    }
-    const key = keys[i++];
-    await upsertPlanet(key, DEMO_LOAD[key], DEMO_CONFIDENCE[key] || 0.8, true);
-    demoTimer = setTimeout(step, 600);
-  };
-  step();
-}
-
-async function stopDemo() {
-  demoActive = false;
-  demoBtn.classList.remove('is-active');
-  if (demoTimer) {
-    clearTimeout(demoTimer);
-    demoTimer = null;
-  }
-  const badge = document.getElementById('wf-demo-badge');
-  if (badge) badge.remove();
-  await closeAllPlanets();
 }
 
 // ─── Capture flow ────────────────────────────────────────────────────────
 
 async function startCapture() {
   if (isCapturing) return;
-  if (demoActive) await stopDemo();
 
   if (!selectedDeviceId) await pickDevice();
 
@@ -702,10 +670,6 @@ function initDragTracking() {
 window.addEventListener('DOMContentLoaded', async () => {
   micBtn.addEventListener('click', startCapture);
   stopBtn.addEventListener('click', stopCapture);
-  demoBtn.addEventListener('click', () => {
-    if (demoActive) stopDemo();
-    else if (!isCapturing) startDemo();
-  });
   closeBtn.addEventListener('click', async () => {
     try {
       await tauriInvoke('toggle_widget');
@@ -757,14 +721,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     repositionAllPlanets();
   });
 
-  // Demo toggle: press "D".
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'd' || e.key === 'D') {
-      if (demoActive) {
-        stopDemo();
-      } else if (!isCapturing) {
-        startDemo();
-      }
-    }
+  // The main window clears the orbit when a load is reset ("New load"), since
+  // the planets belong to the load that was just filed away.
+  await tauriListen('load:reset', () => {
+    closeAllPlanets();
   });
 });
