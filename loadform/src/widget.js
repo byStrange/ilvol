@@ -331,18 +331,34 @@ async function closeAllPlanets() {
   }
 }
 
+/**
+ * Rebuild the orbit from the load the backend has accumulated so far.
+ *
+ * Planets are closed whenever the sun hides, so the orbit that comes back has
+ * to be reconstructed from somewhere. Waiting for the next `load:fields` would
+ * mean an empty ring until the next extraction lands — or forever, once the
+ * call has ended.
+ */
+async function restoreOrbit() {
+  try {
+    await applyLoadFields(await tauriInvoke('get_load_fields'));
+  } catch (err) {
+    console.error('get_load_fields failed:', err);
+  }
+}
+
 // ─── load:fields handler ──────────────────────────────────────────────────
 
 /**
  * Values that mean "the model had nothing to say", spelled the way models
  * actually spell it.
  *
- * An empty string is the honest answer, but the extraction prompt itself asks
- * for `"none"` when there are no intermediate stops — and a model that has been
- * told to fill every key will happily write "N/A" or "not mentioned" into the
- * rest. In the main form those land in a labelled input and read fine; in orbit
- * they'd be a chip floating in space announcing that nothing is known, which is
- * worse than no chip at all.
+ * A backstop, not the filter: `load:fields` now carries a load the backend has
+ * already cleaned (`clean_field_value` in lib.rs), which is where the long list
+ * of excuse phrases lives. This catches the plain ones on the way to a planet,
+ * because a chip is the least forgiving place for them — in the form "N/A"
+ * lands in a labelled input and reads fine, in orbit it's a chip floating in
+ * space announcing that nothing is known, which is worse than no chip at all.
  */
 const EMPTY_ANSWERS = new Set([
   'none',
@@ -364,23 +380,30 @@ function planetValue(raw) {
 }
 
 /**
- * Serialises `load:fields` handling.
+ * Serialises everything that touches the orbit.
  *
- * Under auto-fill the event now arrives unattended every few seconds, and a
+ * Under auto-fill `load:fields` arrives unattended every few seconds, and a
  * manual Extract can land on top of an auto one. Two overlapping runs would
  * interleave their creates and removes — one retracting a planet the other is
  * still building — and leave `planets` describing windows that don't exist.
- * Chaining keeps each extraction's view of the orbit whole.
+ *
+ * Wholesale clears go through the same queue, and for the same reason: a
+ * `capture:state` or `load:reset` landing mid-batch used to empty the slot map
+ * while the batch still had planets to place, so the placements that followed
+ * were handed slots the batch had already used and stacked two chips on one
+ * point of the ring.
  */
-let loadFieldsQueue = Promise.resolve();
+let orbitQueue = Promise.resolve();
+
+function queueOrbitTask(task) {
+  orbitQueue = orbitQueue.then(task).catch((err) => {
+    console.error('orbit update failed:', err);
+  });
+  return orbitQueue;
+}
 
 function onLoadFields(payload) {
-  loadFieldsQueue = loadFieldsQueue
-    .then(() => applyLoadFields(payload))
-    .catch((err) => {
-      console.error('load:fields handling failed:', err);
-    });
-  return loadFieldsQueue;
+  return queueOrbitTask(() => applyLoadFields(payload));
 }
 
 async function applyLoadFields(payload) {
@@ -464,7 +487,7 @@ function onCaptureState(payload) {
       interimText = '';
       renderTranscript();
       resetWave();
-      closeAllPlanets();
+      queueOrbitTask(closeAllPlanets);
     }
     setListening(true);
   } else {
@@ -716,14 +739,31 @@ window.addEventListener('DOMContentLoaded', async () => {
   // The backend tells us where it placed the sun each time the widget is
   // shown. This window's JS loads once at app startup, so without this the
   // geometry read above would stay stuck at its pre-positioning default.
+  //
+  // Showing the sun is also where the orbit comes back: the planets were closed
+  // when it was hidden, so anything still in the map is placed against the new
+  // geometry and the rest is rebuilt from the load the backend holds.
   await tauriListen('widget:geometry', (e) => {
     applyGeometry(e.payload);
-    repositionAllPlanets();
+    queueOrbitTask(async () => {
+      await repositionAllPlanets();
+      await restoreOrbit();
+    });
   });
 
   // The main window clears the orbit when a load is reset ("New load"), since
   // the planets belong to the load that was just filed away.
   await tauriListen('load:reset', () => {
-    closeAllPlanets();
+    queueOrbitTask(closeAllPlanets);
+  });
+
+  // Rust closed the planets itself — hiding the sun, or "Continue in app".
+  // Only the map needs clearing here; the windows are already gone, and
+  // leaving stale entries behind would make every later extraction push
+  // updates at dead windows instead of building new planets.
+  await tauriListen('orbit:cleared', () => {
+    queueOrbitTask(() => {
+      planets.clear();
+    });
   });
 });
