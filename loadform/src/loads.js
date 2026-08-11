@@ -75,8 +75,12 @@ function shortLoc(loc) {
 /**
  * Insert a new load or update the existing one identified by loadId.
  * Returns { id } on success, { id: null } on failure.
+ *
+ * orgId, when the caller currently belongs to an organization, is stamped
+ * onto newly-inserted rows only — existing loads never get an org_id
+ * retroactively, which is what keeps org dashboards "forward only".
  */
-export async function saveLoad(supabase, userId, loadId, data, confidence, transcript) {
+export async function saveLoad(supabase, userId, loadId, data, confidence, transcript, orgId) {
   if (!supabase || !userId) return { id: null };
 
   const row = {};
@@ -102,6 +106,7 @@ export async function saveLoad(supabase, userId, loadId, data, confidence, trans
     }
 
     row.user_id = userId;
+    if (orgId) row.org_id = orgId;
     const { data: inserted, error } = await supabase
       .from('loads')
       .insert(row)
@@ -118,12 +123,20 @@ export async function saveLoad(supabase, userId, loadId, data, confidence, trans
   }
 }
 
-/** Fetch all loads for the current user, newest first (list view columns). */
-export async function fetchLoads(supabase) {
-  if (!supabase) return [];
+/**
+ * Fetch all loads for the current user, newest first (list view columns).
+ *
+ * Explicitly filtered to userId rather than relying on RLS alone: an org
+ * admin's RLS grant additionally covers their org's other dispatchers'
+ * loads (see 20260811000000_organizations.sql), and this is the personal
+ * History panel — org-wide reads belong to the dashboard, not here.
+ */
+export async function fetchLoads(supabase, userId) {
+  if (!supabase || !userId) return [];
   const { data, error } = await supabase
     .from('loads')
     .select(LIST_SELECT)
+    .eq('user_id', userId)
     .order('created_at', { ascending: false });
   if (error) {
     console.error('fetchLoads failed:', error);
