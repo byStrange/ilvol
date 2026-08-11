@@ -116,6 +116,75 @@ $$;
 
 grant execute on function public.create_organization(text) to authenticated;
 
+-- ─── accept_invite() ─────────────────────────────────────────────────────────
+--
+-- The only way a pending invite becomes active. Runs as security definer so
+-- it can set exactly user_id/status/accepted_at on a row the caller doesn't
+-- otherwise have UPDATE access to (see the tightened update policy below) —
+-- a generic client-side UPDATE would let an invitee set any column on their
+-- own row, including role = 'admin', while "accepting".
+
+create or replace function public.accept_invite(p_invite_id uuid)
+returns organization_members
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_row organization_members;
+begin
+  select * into v_row
+  from organization_members
+  where id = p_invite_id
+    and status = 'invited'
+    and invited_email = coalesce(auth.jwt() ->> 'email', '')
+  for update;
+
+  if not found then
+    raise exception 'Invitation not found or already handled';
+  end if;
+
+  if exists (
+    select 1 from organization_members
+    where user_id = auth.uid() and status = 'active'
+  ) then
+    raise exception 'You already belong to an organization';
+  end if;
+
+  update organization_members
+  set user_id = auth.uid(), status = 'active', accepted_at = now()
+  where id = p_invite_id
+  returning * into v_row;
+
+  return v_row;
+end;
+$$;
+
+grant execute on function public.accept_invite(uuid) to authenticated;
+
+-- ─── leave_organization() ───────────────────────────────────────────────────
+--
+-- Self-service leave for the caller's own active, non-owner membership.
+-- A dedicated function rather than a raw UPDATE policy branch keeps "leave"
+-- from being reachable as a general-purpose self-edit.
+
+create or replace function public.leave_organization()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  update organization_members
+  set status = 'removed'
+  where user_id = auth.uid()
+    and status = 'active'
+    and role <> 'owner';
+end;
+$$;
+
+grant execute on function public.leave_organization() to authenticated;
+
 -- ─── organizations policies ──────────────────────────────────────────────────
 
 create policy "org members can view their organization"
@@ -146,37 +215,47 @@ create policy "see own membership, invites, or org roster as admin"
     or public.is_org_admin(org_id)
   );
 
+-- Admin-created rows can only ever start as a pending, unclaimed, non-owner
+-- invite — activation happens exclusively through accept_invite() above, so
+-- an admin can't directly insert an already-active member (bypassing the
+-- invitee's consent) or a role = 'owner' row (there is exactly one owner,
+-- created only by create_organization()).
 create policy "org admins can invite members"
   on organization_members for insert
   to authenticated
-  with check (public.is_org_admin(org_id));
-
-create policy "accept own invite or admin manages roster"
-  on organization_members for update
-  to authenticated
-  using (
-    (invited_email = coalesce(auth.jwt() ->> 'email', '') and status = 'invited')
-    or public.is_org_admin(org_id)
-  )
   with check (
-    -- Accepting: the invitee may only ever attach themselves.
-    (user_id = auth.uid())
-    or public.is_org_admin(org_id)
+    public.is_org_admin(org_id)
+    and role in ('admin', 'dispatcher')
+    and status = 'invited'
+    and user_id is null
   );
 
--- Covers three self-service cases plus admin cleanup: an invitee declining,
--- an active member leaving on their own, and an admin removing anyone.
--- Nothing stops an owner from deleting their own row this way (there's no
--- ownership-transfer flow yet) — the app hides the "leave" action for
--- owners, but that's a UI guard, not an RLS one; a second owner or a
--- transfer step would need to land before this is fully safe.
-create policy "org admins can remove members, or a member leaves themselves"
+-- Admin-only. An invitee has no direct UPDATE path onto their own row —
+-- accept_invite() (security definer) is the only way a pending invite
+-- becomes active, so this policy can't be used to smuggle role = 'owner'
+-- or role = 'admin' into an "acceptance". The owner's own row is excluded
+-- from both using and with check, so it can't be touched via this policy
+-- at all — there's no ownership-transfer flow yet.
+create policy "org admins manage non-owner roster rows"
+  on organization_members for update
+  to authenticated
+  using (public.is_org_admin(org_id) and role <> 'owner')
+  with check (public.is_org_admin(org_id) and role in ('admin', 'dispatcher'));
+
+-- Deleting is only ever for a *pending* invite — declined by the invitee or
+-- revoked by an admin. An active membership is deactivated via UPDATE
+-- (status = 'removed', see leave_organization() and the update policy
+-- above), never deleted, which both preserves roster history and makes it
+-- structurally impossible to delete the sole owner row.
+create policy "decline or revoke a pending invite"
   on organization_members for delete
   to authenticated
   using (
-    (invited_email = coalesce(auth.jwt() ->> 'email', '') and status = 'invited')
-    or user_id = auth.uid()
-    or public.is_org_admin(org_id)
+    status = 'invited'
+    and (
+      invited_email = coalesce(auth.jwt() ->> 'email', '')
+      or public.is_org_admin(org_id)
+    )
   );
 
 -- ─── loads: org visibility (read-only, forward-only) ────────────────────────

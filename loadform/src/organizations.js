@@ -56,13 +56,13 @@ export async function fetchMyInvites(supabase, email) {
 }
 
 /** Accept a pending invite: attaches it to the caller and activates it.
- * Fails if the caller is already an active member elsewhere. */
-export async function acceptInvite(supabase, memberRowId, userId) {
-  if (!supabase || !memberRowId || !userId) return { ok: false };
-  const { error } = await supabase
-    .from('organization_members')
-    .update({ user_id: userId, status: 'active', accepted_at: new Date().toISOString() })
-    .eq('id', memberRowId);
+ * Fails if the caller is already an active member elsewhere. Goes through
+ * the accept_invite() RPC rather than a raw UPDATE — a direct client-side
+ * update to the caller's own row would only be checked on user_id, letting
+ * an invite "acceptance" also smuggle in role = 'admin' or similar. */
+export async function acceptInvite(supabase, memberRowId) {
+  if (!supabase || !memberRowId) return { ok: false };
+  const { error } = await supabase.rpc('accept_invite', { p_invite_id: memberRowId });
   if (error) {
     console.error('acceptInvite failed:', error);
     return { ok: false, error: error.message };
@@ -70,9 +70,30 @@ export async function acceptInvite(supabase, memberRowId, userId) {
   return { ok: true };
 }
 
-/** Decline a pending invite (deletes the invite row). */
+/** Decline a pending invite (deletes the invite row; only pending invites
+ * can be deleted at all — see the migration). */
 export async function declineInvite(supabase, memberRowId) {
-  return removeMember(supabase, memberRowId);
+  if (!supabase || !memberRowId) return { ok: false };
+  const { error } = await supabase.from('organization_members').delete().eq('id', memberRowId);
+  if (error) {
+    console.error('declineInvite failed:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+/** Leave the caller's own active org membership. Goes through the
+ * leave_organization() RPC — owners can't leave (no ownership-transfer flow
+ * yet), which the function enforces itself rather than relying on the UI to
+ * hide the button. */
+export async function leaveOrganization(supabase) {
+  if (!supabase) return { ok: false };
+  const { error } = await supabase.rpc('leave_organization');
+  if (error) {
+    console.error('leaveOrganization failed:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
 }
 
 /** Fetch the full member roster for an org (owner/admin only — RLS-enforced). */
@@ -109,13 +130,17 @@ export async function inviteMember(supabase, orgId, email, role, invitedByUserId
   return { ok: true };
 }
 
-/** Remove a member, or revoke a pending invite (owner/admin only for someone
- * else's row — RLS-enforced; also usable by an invitee declining their own).
- * A removed member's already-created loads keep their org_id and stay
- * visible on the dashboard — only the membership row goes away. */
-export async function removeMember(supabase, memberRowId) {
+/** Remove a member (owner/admin only — RLS-enforced). A pending invite is
+ * revoked outright (deleted); an active membership is deactivated
+ * (status = 'removed') rather than deleted, so the roster history and the
+ * dashboard's "left org" bucket stay intact — and so the owner row, which
+ * the update policy refuses to touch, can never be removed this way. */
+export async function removeMember(supabase, memberRowId, status) {
   if (!supabase || !memberRowId) return { ok: false };
-  const { error } = await supabase.from('organization_members').delete().eq('id', memberRowId);
+  const { error } =
+    status === 'invited'
+      ? await supabase.from('organization_members').delete().eq('id', memberRowId)
+      : await supabase.from('organization_members').update({ status: 'removed' }).eq('id', memberRowId);
   if (error) {
     console.error('removeMember failed:', error);
     return { ok: false, error: error.message };

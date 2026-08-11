@@ -34,6 +34,7 @@ import {
   fetchMyInvites,
   acceptInvite,
   declineInvite,
+  leaveOrganization,
   fetchOrgMembers,
   inviteMember,
   removeMember,
@@ -969,7 +970,7 @@ async function refreshLoadsList() {
     renderLoadsList();
     return;
   }
-  loadsList = await fetchLoads(supabase);
+  loadsList = await fetchLoads(supabase, currentUser.id);
   renderLoadsList();
 }
 
@@ -1147,13 +1148,13 @@ function initAuth() {
   const token = localStorage.getItem('sb-auth-token');
   if (token) {
     // Try to restore session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session) {
         currentUser = session.user;
         hideAuthModal();
         fetchAndSetApiKeys();
         refreshLoadsList();
-        refreshOrgContext();
+        await refreshOrgContext();
       } else {
         // Token invalid/expired
         localStorage.removeItem('sb-auth-token');
@@ -1248,7 +1249,7 @@ async function handleAuthSubmit(e) {
       currentUser = session.user;
       await fetchAndSetApiKeys();
       refreshLoadsList();
-      refreshOrgContext();
+      await refreshOrgContext();
       hideAuthModal();
       els.authForm.reset();
     } else {
@@ -1413,7 +1414,7 @@ async function handleOrgModalClick(e) {
   const action = btn.dataset.orgAction;
 
   if (action === 'accept') {
-    const { ok, error } = await acceptInvite(supabase, btn.dataset.inviteId, currentUser.id);
+    const { ok, error } = await acceptInvite(supabase, btn.dataset.inviteId);
     if (!ok) {
       showOrgError(error || 'Could not accept invite');
       return;
@@ -1423,15 +1424,28 @@ async function handleOrgModalClick(e) {
     await declineInvite(supabase, btn.dataset.inviteId);
     await showOrgModal();
   } else if (action === 'remove') {
-    await removeMember(supabase, btn.dataset.memberId);
-    orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
-    renderOrgModal();
+    const memberId = btn.dataset.memberId;
+    const member = orgRoster.find((m) => m.id === memberId);
+    await removeMember(supabase, memberId, member?.status);
+    if (memberId === currentMembership?.id) {
+      // Removed themselves: currentMembership and any admin-only UI it
+      // drives (invite form, roster, dashboard access) need to be
+      // re-derived from scratch, not just the roster list refreshed.
+      await showOrgModal();
+    } else {
+      orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
+      renderOrgModal();
+    }
   }
 }
 
 async function handleOrgLeave() {
   if (!currentMembership) return;
-  await removeMember(supabase, currentMembership.id);
+  const { ok, error } = await leaveOrganization(supabase);
+  if (!ok) {
+    showOrgError(error || 'Could not leave organization');
+    return;
+  }
   await showOrgModal();
 }
 
@@ -1439,12 +1453,20 @@ async function handleOrgRosterRoleChange(e) {
   const select = e.target.closest('[data-org-role-select]');
   if (!select) return;
   hideOrgError();
-  const { ok, error } = await updateMemberRole(supabase, select.dataset.memberId, select.value);
+  const memberId = select.dataset.memberId;
+  const { ok, error } = await updateMemberRole(supabase, memberId, select.value);
   if (!ok) {
     showOrgError(error || 'Could not update role');
   }
-  orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
-  renderOrgModal();
+  if (memberId === currentMembership?.id) {
+    // Demoted themselves out of admin: re-derive currentMembership so the
+    // admin-only panels disappear immediately instead of showing stale
+    // (pre-demotion) permissions until the next full refresh.
+    await showOrgModal();
+  } else {
+    orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
+    renderOrgModal();
+  }
 }
 
 // ─── Organization dashboard ─────────────────────────────────────────────────
@@ -1483,7 +1505,7 @@ function renderOrgDashboard(stats, loads) {
     dashboardTile('Last 7 days', last7dTotal) +
     dashboardTile('Dispatchers', activeDispatcherCount);
 
-  els.orgDashboardEmpty.classList.toggle('hidden', stats.length > 0);
+  els.orgDashboardEmpty.classList.toggle('hidden', loads.length > 0);
   els.orgDashboardTableBody.innerHTML = '';
 
   for (const s of stats) {
