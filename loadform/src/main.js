@@ -18,7 +18,13 @@ import {
   getConfidenceBadgeColor,
   needsReview,
 } from './templates.js';
-import { createClient } from '@supabase/supabase-js';
+import {
+  supabase,
+  getDeepgramToken,
+  extractLoad,
+  reportCaptureEnded,
+  fetchUsageSummary,
+} from './api.js';
 import {
   saveLoad,
   fetchLoads,
@@ -42,12 +48,6 @@ import {
   fetchOrgLoads,
   aggregateDispatcherStats,
 } from './organizations.js';
-
-// ─── Supabase Config ───────────────────────────────────────────────────────
-const SUPABASE_URL = 'https://tusiipxekbfheihjrjbd.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR1c2lpcHhla2JmaGVpaGpyamJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MDExMTgsImV4cCI6MjA5OTA3NzExOH0.s86u7JDk0mgYqSm_NNKOQnIHKfWlizRt5xswd5vc1xI';
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
 function tauriInvoke(cmd, args = {}) {
@@ -148,6 +148,9 @@ let selectedDeviceId = '';
 // planets) populate while the broker is still talking, rather than waiting for
 // an explicit Extract. The checkbox in index.html ships `checked` to match.
 let autoExtractEnabled = true;
+// Metering: correlates this session's token grant, extractions and end.
+let currentCaptureId = null;
+let captureStartedAt = null;
 let lastExtractTime = 0;
 const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
 
@@ -219,8 +222,15 @@ const els = {
   settingsModal: document.getElementById('settings-modal'),
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
-  llmProviderSelect: document.getElementById('llm-provider-select'),
   logoutBtn: document.getElementById('logout-btn'),
+  // Usage display
+  usagePill: document.getElementById('usage-pill'),
+  usagePillLabel: document.getElementById('usage-pill-label'),
+  usagePeriod: document.getElementById('usage-period'),
+  usageToday: document.getElementById('usage-today'),
+  usageMonth: document.getElementById('usage-month'),
+  usageSessions: document.getElementById('usage-sessions'),
+  usageMinutes: document.getElementById('usage-minutes'),
   // Organization elements
   orgOpenBtn: document.getElementById('org-open-btn'),
   orgOpenBtnSub: document.getElementById('org-open-btn-sub'),
@@ -550,13 +560,27 @@ async function startCapture() {
     resetForm();
   }
   try {
+    // Mint a fresh short-lived Deepgram token per capture. This is also the
+    // server-side gate where quota will be enforced, so a failure here is a
+    // legitimate reason not to start.
+    const mixSystemAudio = els.mixSystemCheckbox.checked;
+    const { token, captureId } = await getDeepgramToken(
+      mixSystemAudio ? 'mixed' : 'mic',
+    );
+    currentCaptureId = captureId;
+    captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
       deviceId: selectedDeviceId,
-      mixSystemAudio: els.mixSystemCheckbox.checked,
+      mixSystemAudio,
+      deepgramToken: token,
     });
   } catch (err) {
     console.error('Failed to start capture:', err);
-    alert('Failed to start capture: ' + err);
+    alert(
+      err?.quotaExceeded
+        ? 'You have reached your load limit. Upgrade your plan to keep capturing.'
+        : 'Failed to start capture: ' + (err?.message ?? err),
+    );
   }
 }
 
@@ -567,6 +591,15 @@ async function stopCapture() {
   } catch (err) {
     console.error('Error stopping capture:', err);
   }
+
+  // Report duration before clearing, so we learn actual minutes-per-load.
+  if (currentCaptureId && captureStartedAt) {
+    reportCaptureEnded(
+      currentCaptureId,
+      Math.round((Date.now() - captureStartedAt) / 1000),
+    );
+  }
+  captureStartedAt = null;
 }
 
 function enterListeningUI() {
@@ -707,9 +740,18 @@ async function performExtract(showSpinner = true) {
   }
 
   try {
-    const result = await tauriInvoke('extract_load_data', {
-      req: { transcript: accumulatedTranscript }
-    });
+    const answer = await extractLoad(accumulatedTranscript, currentCaptureId);
+
+    // Extraction now happens server-side, so Rust no longer emits `load:fields`
+    // itself — hand the answer back so the widget's planet chips still update.
+    // Rust folds it into the load accumulated so far and returns that, which is
+    // what we render: this answer alone would drop fields the model went quiet
+    // about, and would leave the form disagreeing with the widget.
+    //
+    // Outside the Tauri runtime (plain `vite dev`) the invoke fails, so fall
+    // back to the raw answer rather than rendering nothing.
+    const result = await tauriInvoke('broadcast_load_fields', { fields: answer })
+      .catch(() => answer);
 
     currentExtractedData = result.data;
     currentConfidence = result.confidence;
@@ -719,6 +761,11 @@ async function performExtract(showSpinner = true) {
 
     // Persist the extracted load (insert on first save, update thereafter).
     await saveCurrentLoad();
+
+    // Auto-extract fires repeatedly within one call, but each run records a
+    // usage event, so the counter genuinely moves. Refresh it here so the pill
+    // tracks reality instead of going stale until the next sign-in.
+    refreshUsage();
 
     // Return to listening if still capturing, otherwise mark done.
     if (isCapturing) {
@@ -730,6 +777,15 @@ async function performExtract(showSpinner = true) {
     }
   } catch (err) {
     console.error('Auto-extract failed:', err);
+    // Auto-extract retries on a timer, so a transient failure is fine to
+    // swallow. A quota wall is not — it will not resolve on its own, and
+    // silently producing no fields would look like the app is broken.
+    if (err?.quotaExceeded) {
+      autoExtractEnabled = false;
+      alert('You have reached your load limit. Upgrade your plan to keep extracting.');
+    } else if (showSpinner) {
+      alert('Extraction failed: ' + (err?.message ?? err));
+    }
     if (isCapturing) setStatus('listening');
   } finally {
     if (showSpinner) {
@@ -1152,9 +1208,9 @@ function initAuth() {
       if (session) {
         currentUser = session.user;
         hideAuthModal();
-        fetchAndSetApiKeys();
         refreshLoadsList();
         await refreshOrgContext();
+        refreshUsage();
       } else {
         // Token invalid/expired
         localStorage.removeItem('sb-auth-token');
@@ -1179,12 +1235,52 @@ function hideAuthModal() {
 function showSettingsModal() {
   if (!currentUser) return;
   els.settingsUserEmail.textContent = currentUser.email || 'Unknown';
-  refreshLlmProviderUI();
   els.settingsModal.classList.remove('hidden');
+  refreshUsage();
 }
 
 function hideSettingsModal() {
   els.settingsModal.classList.add('hidden');
+}
+
+// ─── Usage Display ──────────────────────────────────────────────────────────
+//
+// Shows plain counts, not "8 / 15". No quota is enforced yet, and inventing a
+// limit to fill the slot would train users to expect a number we haven't
+// decided on. When plans land, the pill becomes "used / allowed" and this is
+// the one place that changes.
+
+function formatDuration(totalSeconds) {
+  const mins = Math.round(totalSeconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+async function refreshUsage() {
+  if (!currentUser) return;
+
+  const usage = await fetchUsageSummary();
+  if (!usage) {
+    // Leave whatever was last shown rather than flashing zeroes, which would
+    // read as "your work wasn't counted".
+    return;
+  }
+
+  els.usagePill.classList.remove('hidden');
+  els.usagePillLabel.textContent =
+    usage.loadsToday === 1 ? '1 load today' : `${usage.loadsToday} loads today`;
+
+  els.usageToday.textContent = usage.loadsToday;
+  els.usageMonth.textContent = usage.loadsMonth;
+  els.usageSessions.textContent = usage.captureSessionsMonth;
+  els.usageMinutes.textContent = formatDuration(usage.audioSecondsMonth);
+
+  els.usagePeriod.textContent = new Date().toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
 }
 
 function toggleAuthMode() {
@@ -1247,9 +1343,9 @@ async function handleAuthSubmit(e) {
     if (session) {
       localStorage.setItem('sb-auth-token', session.access_token);
       currentUser = session.user;
-      await fetchAndSetApiKeys();
       refreshLoadsList();
       await refreshOrgContext();
+      refreshUsage();
       hideAuthModal();
       els.authForm.reset();
     } else {
@@ -1522,86 +1618,8 @@ function renderOrgDashboard(stats, loads) {
   }
 }
 
-async function fetchAndSetApiKeys() {
-  try {
-    const { data, error } = await supabase.from('api_keys').select('*');
-    if (error) throw error;
-
-    const keys = { deepgram: '', ollama: '', gemini: '' };
-    for (const row of data) {
-      if (row.provider === 'deepgram') keys.deepgram = row.key_value;
-      if (row.provider === 'ollama') keys.ollama = row.key_value;
-      if (row.provider === 'gemini') keys.gemini = row.key_value;
-    }
-
-    await tauriInvoke('set_api_keys', {
-      payload: {
-        deepgram_key: keys.deepgram,
-        ollama_key: keys.ollama,
-        // Omitted rather than sent empty when the table has no `gemini` row:
-        // the Rust side treats an absent key as "leave what's there", which is
-        // what keeps a dev-time GEMINI_API_KEY from being wiped on sign-in.
-        ...(keys.gemini ? { gemini_key: keys.gemini } : {}),
-      },
-    });
-    console.log('API keys pushed to Rust backend');
-  } catch (err) {
-    console.error('Failed to set API keys in Rust:', err);
-  }
-
-  // Replay the saved provider once the keys have landed — and deliberately
-  // outside the try, so a Supabase hiccup doesn't silently drop the app back
-  // onto Ollama. Rust rebuilds its config empty on every launch, so without
-  // this the choice wouldn't survive a restart.
-  await applyStoredLlmProvider();
-}
-
-// ─── LLM provider selection ─────────────────────────────────────────────────
-
-const LLM_PROVIDER_KEY = 'lf-llm-provider';
-
-// Push the persisted choice into Rust and reflect it in the settings select.
-async function applyStoredLlmProvider() {
-  const stored = localStorage.getItem(LLM_PROVIDER_KEY);
-  if (!stored) return;
-  try {
-    await tauriInvoke('set_llm_provider', { provider: stored });
-  } catch (err) {
-    console.error('Failed to restore LLM provider:', err);
-    // Only forget the choice when Rust actually rejected the *value* — outside
-    // the Tauri runtime (plain `vite dev` in a browser) the invoke always
-    // fails, and wiping the preference there would be lost user intent.
-    if (typeof window.__TAURI__ !== 'undefined') {
-      localStorage.removeItem(LLM_PROVIDER_KEY);
-    }
-    return;
-  }
-  if (els.llmProviderSelect) els.llmProviderSelect.value = stored;
-}
-
-// Sync the select with whatever Rust currently believes, so the modal never
-// shows a provider that isn't actually in use (e.g. after a failed restore).
-async function refreshLlmProviderUI() {
-  if (!els.llmProviderSelect) return;
-  try {
-    const provider = await tauriInvoke('get_llm_provider');
-    if (provider) els.llmProviderSelect.value = provider;
-  } catch (err) {
-    console.error('Failed to read LLM provider:', err);
-  }
-}
-
-async function onLlmProviderChange(e) {
-  const provider = e.target.value;
-  try {
-    await tauriInvoke('set_llm_provider', { provider });
-    localStorage.setItem(LLM_PROVIDER_KEY, provider);
-  } catch (err) {
-    console.error('Failed to set LLM provider:', err);
-    // Snap the control back rather than leave it lying about the active model.
-    refreshLlmProviderUI();
-  }
-}
+// fetchAndSetApiKeys() is gone. Provider keys are never sent to the client
+// anymore — see src/api.js and supabase/functions/.
 
 async function handleLogout() {
   try {
@@ -1617,15 +1635,15 @@ async function handleLogout() {
   currentInvites = [];
   orgRoster = [];
   renderLoadsList();
+  // Don't leave the previous user's counts on screen for the next sign-in.
+  els.usagePill.classList.add('hidden');
+  els.usagePillLabel.textContent = '—';
   hideSettingsModal();
   hideOrgModal();
   hideOrgDashboard();
   showAuthModal();
-  try {
-    await tauriInvoke('logout');
-  } catch (err) {
-    console.error('Logout command error:', err);
-  }
+  // No `logout` command anymore: Rust holds no credentials to clear, since the
+  // Deepgram token is passed per-capture and never stored.
 }
 
 // ─── Event Listeners ────────────────────────────────────────────────────────
@@ -1667,6 +1685,7 @@ window.addEventListener('DOMContentLoaded', () => {
   els.authForm.addEventListener('submit', handleAuthSubmit);
   els.authToggleBtn.addEventListener('click', toggleAuthMode);
   els.settingsBtn.addEventListener('click', showSettingsModal);
+  els.usagePill.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
 
@@ -1692,14 +1711,6 @@ window.addEventListener('DOMContentLoaded', () => {
   els.orgDashboardModal.addEventListener('click', (e) => {
     if (e.target === els.orgDashboardModal) hideOrgDashboard();
   });
-
-  // Show the saved provider immediately; initAuth's key fetch is what actually
-  // hands it to Rust, and that only resolves once Supabase answers.
-  if (els.llmProviderSelect) {
-    const storedProvider = localStorage.getItem(LLM_PROVIDER_KEY);
-    if (storedProvider) els.llmProviderSelect.value = storedProvider;
-    els.llmProviderSelect.addEventListener('change', onLlmProviderChange);
-  }
 
   // Floating widget: show/hide the always-on-top capture remote.
   if (els.widgetBtn) {
