@@ -75,8 +75,12 @@ function shortLoc(loc) {
 /**
  * Insert a new load or update the existing one identified by loadId.
  * Returns { id } on success, { id: null } on failure.
+ *
+ * orgId, when the caller currently belongs to an organization, is stamped
+ * onto newly-inserted rows only — existing loads never get an org_id
+ * retroactively, which is what keeps org dashboards "forward only".
  */
-export async function saveLoad(supabase, userId, loadId, data, confidence, transcript) {
+export async function saveLoad(supabase, userId, loadId, data, confidence, transcript, orgId) {
   if (!supabase || !userId) return { id: null };
 
   const row = {};
@@ -102,6 +106,7 @@ export async function saveLoad(supabase, userId, loadId, data, confidence, trans
     }
 
     row.user_id = userId;
+    if (orgId) row.org_id = orgId;
     const { data: inserted, error } = await supabase
       .from('loads')
       .insert(row)

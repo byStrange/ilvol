@@ -28,6 +28,16 @@ import {
   loadToDriverText,
 } from './loads.js';
 import { startTutorial } from './tutorial.js';
+import {
+  createOrganization,
+  fetchMyMembership,
+  fetchMyInvites,
+  acceptInvite,
+  declineInvite,
+  fetchOrgMembers,
+  inviteMember,
+  removeMember,
+} from './organizations.js';
 
 // ─── Supabase Config ───────────────────────────────────────────────────────
 const SUPABASE_URL = 'https://tusiipxekbfheihjrjbd.supabase.co';
@@ -149,6 +159,9 @@ const EDIT_SAVE_DEBOUNCE_MS = 1200;
 
 let authMode = 'signin'; // 'signin' | 'signup'
 let currentUser = null;
+let currentMembership = null; // { id, org_id, role, organizations: {...} } | null
+let currentInvites = []; // pending invites addressed to currentUser's email
+let orgRoster = []; // cached roster, populated when the org panel is open as owner/admin
 
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
@@ -204,6 +217,26 @@ const els = {
   settingsCloseBtn: document.getElementById('settings-close-btn'),
   llmProviderSelect: document.getElementById('llm-provider-select'),
   logoutBtn: document.getElementById('logout-btn'),
+  // Organization elements
+  orgOpenBtn: document.getElementById('org-open-btn'),
+  orgOpenBtnSub: document.getElementById('org-open-btn-sub'),
+  orgModal: document.getElementById('org-modal'),
+  orgBackBtn: document.getElementById('org-back-btn'),
+  orgError: document.getElementById('org-error'),
+  orgInvitesSection: document.getElementById('org-invites-section'),
+  orgInvitesList: document.getElementById('org-invites-list'),
+  orgCreateSection: document.getElementById('org-create-section'),
+  orgCreateForm: document.getElementById('org-create-form'),
+  orgCreateName: document.getElementById('org-create-name'),
+  orgMemberSection: document.getElementById('org-member-section'),
+  orgMemberName: document.getElementById('org-member-name'),
+  orgMemberRole: document.getElementById('org-member-role'),
+  orgAdminSection: document.getElementById('org-admin-section'),
+  orgInviteForm: document.getElementById('org-invite-form'),
+  orgInviteEmail: document.getElementById('org-invite-email'),
+  orgInviteRole: document.getElementById('org-invite-role'),
+  orgRosterList: document.getElementById('org-roster-list'),
+  orgLeaveBtn: document.getElementById('org-leave-btn'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -899,7 +932,8 @@ async function saveCurrentLoad() {
     currentLoadId,
     currentExtractedData,
     currentConfidence,
-    accumulatedTranscript
+    accumulatedTranscript,
+    currentMembership?.org_id
   );
   if (id && !currentLoadId) {
     currentLoadId = id;
@@ -1108,6 +1142,7 @@ function initAuth() {
         hideAuthModal();
         fetchAndSetApiKeys();
         refreshLoadsList();
+        refreshOrgContext();
       } else {
         // Token invalid/expired
         localStorage.removeItem('sb-auth-token');
@@ -1202,6 +1237,7 @@ async function handleAuthSubmit(e) {
       currentUser = session.user;
       await fetchAndSetApiKeys();
       refreshLoadsList();
+      refreshOrgContext();
       hideAuthModal();
       els.authForm.reset();
     } else {
@@ -1215,6 +1251,168 @@ async function handleAuthSubmit(e) {
     els.authSubmitBtn.disabled = false;
     updateAuthUI();
   }
+}
+
+// ─── Organizations ──────────────────────────────────────────────────────────
+
+// Reload the caller's membership + (if they have none) pending invites.
+// Called after every sign-in and after any org action that could change them.
+async function refreshOrgContext() {
+  if (!currentUser) {
+    currentMembership = null;
+    currentInvites = [];
+    return;
+  }
+  currentMembership = await fetchMyMembership(supabase, currentUser.id);
+  currentInvites = currentMembership ? [] : await fetchMyInvites(supabase, currentUser.email);
+  updateOrgOpenButton();
+}
+
+function updateOrgOpenButton() {
+  if (!els.orgOpenBtnSub) return;
+  if (currentMembership) {
+    const org = currentMembership.organizations;
+    els.orgOpenBtnSub.textContent = `${org?.name || 'Organization'} · ${currentMembership.role}`;
+  } else if (currentInvites.length > 0) {
+    els.orgOpenBtnSub.textContent = `${currentInvites.length} pending invitation${currentInvites.length > 1 ? 's' : ''}`;
+  } else {
+    els.orgOpenBtnSub.textContent = 'Not part of an organization';
+  }
+}
+
+function showOrgError(message) {
+  els.orgError.textContent = message;
+  els.orgError.classList.remove('hidden');
+}
+
+function hideOrgError() {
+  els.orgError.classList.add('hidden');
+}
+
+async function showOrgModal() {
+  hideSettingsModal();
+  hideOrgError();
+  els.orgModal.classList.remove('hidden');
+  els.orgModal.classList.add('flex');
+  await refreshOrgContext();
+  if (currentMembership && ['owner', 'admin'].includes(currentMembership.role)) {
+    orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
+  } else {
+    orgRoster = [];
+  }
+  renderOrgModal();
+}
+
+function hideOrgModal() {
+  els.orgModal.classList.add('hidden');
+  els.orgModal.classList.remove('flex');
+}
+
+function renderOrgModal() {
+  const hasInvites = currentInvites.length > 0;
+  els.orgInvitesSection.classList.toggle('hidden', !hasInvites);
+  els.orgCreateSection.classList.toggle('hidden', !!currentMembership);
+  els.orgMemberSection.classList.toggle('hidden', !currentMembership);
+
+  if (hasInvites) {
+    els.orgInvitesList.innerHTML = '';
+    for (const invite of currentInvites) {
+      const row = document.createElement('div');
+      row.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-950/40 border border-white/5';
+      row.innerHTML = `
+        <span class="text-sm text-slate-200 truncate">${escapeHtml(invite.organizations?.name || 'Organization')} <span class="text-slate-500">· ${escapeHtml(invite.role)}</span></span>
+        <span class="flex gap-2 shrink-0">
+          <button type="button" class="lf-btn py-1.5 px-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-xs font-medium" data-org-action="accept" data-invite-id="${invite.id}">Accept</button>
+          <button type="button" class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium" data-org-action="decline" data-invite-id="${invite.id}">Decline</button>
+        </span>`;
+      els.orgInvitesList.appendChild(row);
+    }
+  }
+
+  if (currentMembership) {
+    const org = currentMembership.organizations;
+    els.orgMemberName.textContent = org?.name || 'Organization';
+    els.orgMemberRole.textContent = `Role: ${currentMembership.role}`;
+
+    const isAdmin = ['owner', 'admin'].includes(currentMembership.role);
+    els.orgAdminSection.classList.toggle('hidden', !isAdmin);
+    // Owners can't leave their own org in v1 (no ownership transfer yet).
+    els.orgLeaveBtn.classList.toggle('hidden', currentMembership.role === 'owner');
+
+    if (isAdmin) {
+      els.orgRosterList.innerHTML = '';
+      for (const member of orgRoster) {
+        const label = member.status === 'invited' ? `${member.invited_email} (pending)` : member.invited_email;
+        const canRemove = member.role !== 'owner';
+        const row = document.createElement('div');
+        row.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-950/40 border border-white/5';
+        row.innerHTML = `
+          <span class="text-sm text-slate-300 truncate">${escapeHtml(label)} <span class="text-slate-500">· ${escapeHtml(member.role)}</span></span>
+          ${canRemove ? `<button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium shrink-0" data-org-action="remove" data-member-id="${member.id}">Remove</button>` : ''}`;
+        els.orgRosterList.appendChild(row);
+      }
+    }
+  }
+}
+
+async function handleOrgCreateSubmit(e) {
+  e.preventDefault();
+  hideOrgError();
+  const name = els.orgCreateName.value.trim();
+  if (!name) return;
+  const { organization, error } = await createOrganization(supabase, name);
+  if (error || !organization) {
+    showOrgError(error || 'Could not create organization');
+    return;
+  }
+  els.orgCreateForm.reset();
+  await showOrgModal();
+}
+
+async function handleOrgInviteSubmit(e) {
+  e.preventDefault();
+  hideOrgError();
+  if (!currentMembership) return;
+  const email = els.orgInviteEmail.value.trim();
+  const role = els.orgInviteRole.value;
+  if (!email) return;
+  const { ok, error } = await inviteMember(supabase, currentMembership.org_id, email, role, currentUser.id);
+  if (!ok) {
+    showOrgError(error || 'Could not send invite');
+    return;
+  }
+  els.orgInviteForm.reset();
+  orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
+  renderOrgModal();
+}
+
+async function handleOrgModalClick(e) {
+  const btn = e.target.closest('[data-org-action]');
+  if (!btn) return;
+  hideOrgError();
+  const action = btn.dataset.orgAction;
+
+  if (action === 'accept') {
+    const { ok, error } = await acceptInvite(supabase, btn.dataset.inviteId, currentUser.id);
+    if (!ok) {
+      showOrgError(error || 'Could not accept invite');
+      return;
+    }
+    await showOrgModal();
+  } else if (action === 'decline') {
+    await declineInvite(supabase, btn.dataset.inviteId);
+    await showOrgModal();
+  } else if (action === 'remove') {
+    await removeMember(supabase, btn.dataset.memberId);
+    orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
+    renderOrgModal();
+  }
+}
+
+async function handleOrgLeave() {
+  if (!currentMembership) return;
+  await removeMember(supabase, currentMembership.id);
+  await showOrgModal();
 }
 
 async function fetchAndSetApiKeys() {
@@ -1308,8 +1506,12 @@ async function handleLogout() {
   currentUser = null;
   currentLoadId = null;
   loadsList = [];
+  currentMembership = null;
+  currentInvites = [];
+  orgRoster = [];
   renderLoadsList();
   hideSettingsModal();
+  hideOrgModal();
   showAuthModal();
   try {
     await tauriInvoke('logout');
@@ -1359,6 +1561,21 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsBtn.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
+
+  // Organization event listeners
+  els.orgOpenBtn.addEventListener('click', showOrgModal);
+  els.orgBackBtn.addEventListener('click', () => {
+    hideOrgModal();
+    showSettingsModal();
+  });
+  els.orgCreateForm.addEventListener('submit', handleOrgCreateSubmit);
+  els.orgInviteForm.addEventListener('submit', handleOrgInviteSubmit);
+  els.orgInvitesList.addEventListener('click', handleOrgModalClick);
+  els.orgRosterList.addEventListener('click', handleOrgModalClick);
+  els.orgLeaveBtn.addEventListener('click', handleOrgLeave);
+  els.orgModal.addEventListener('click', (e) => {
+    if (e.target === els.orgModal) hideOrgModal();
+  });
 
   // Show the saved provider immediately; initAuth's key fetch is what actually
   // hands it to Rust, and that only resolves once Supabase answers.
