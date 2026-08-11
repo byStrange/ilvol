@@ -174,9 +174,11 @@ pub struct CaptureOptions {
     pub mix_system_audio: bool, // if true, mix mic + system
 }
 
+/// `deepgram_token` is an ephemeral access token from the `deepgram-token`
+/// Edge Function. It is passed per-capture and never persisted.
 pub fn start_capture(
     app_handle: AppHandle,
-    deepgram_api_key: String,
+    deepgram_token: String,
     options: CaptureOptions,
 ) -> Result<CaptureHandle, String> {
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -187,7 +189,7 @@ pub fn start_capture(
         rt.block_on(async {
             if let Err(e) = capture_and_stream(
                 app_handle.clone(),
-                deepgram_api_key,
+                deepgram_token,
                 options,
                 stop_flag_clone,
             )
@@ -231,9 +233,15 @@ async fn capture_and_stream(
         .as_str()
         .into_client_request()
         .map_err(|e| format!("WS request build failed: {}", e))?;
+    // `api_key` is a short-lived token minted by the `deepgram-token` Edge
+    // Function, not our long-lived API key — hence Bearer rather than Token.
+    // It only needs to be valid for this handshake; the stream then stays open
+    // for the rest of the call regardless of the token expiring.
     request.headers_mut().insert(
         "Authorization",
-        format!("Token {}", api_key).parse().unwrap(),
+        format!("Bearer {}", api_key)
+            .parse()
+            .map_err(|e| format!("Invalid Deepgram token: {}", e))?,
     );
 
     let (ws_stream, _) = connect_async(request)

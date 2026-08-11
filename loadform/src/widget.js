@@ -17,6 +17,8 @@
  * to clear.
  */
 
+import { getDeepgramToken, reportCaptureEnded } from './api.js';
+
 // ─── Tauri helpers ────────────────────────────────────────────────────────
 
 function tauriInvoke(cmd, args = {}) {
@@ -73,6 +75,9 @@ const PLANETS_PER_RING = 8;
 
 let isCapturing = false;
 let selectedDeviceId = null;
+// Metering: correlates this session's token grant with its end.
+let currentCaptureId = null;
+let captureStartedAt = null;
 let finalText = '';
 let interimText = '';
 let demoActive = false;
@@ -341,9 +346,13 @@ async function startCapture() {
   if (!selectedDeviceId) await pickDevice();
 
   try {
+    const { token, captureId } = await getDeepgramToken('mic');
+    currentCaptureId = captureId;
+    captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
       deviceId: selectedDeviceId,
       mixSystemAudio: false,
+      deepgramToken: token,
     });
   } catch (err) {
     const msg = String(err?.message ?? err);
@@ -360,6 +369,14 @@ async function stopCapture() {
   } catch (err) {
     console.error('Widget stop_capture error:', err);
   }
+
+  if (currentCaptureId && captureStartedAt) {
+    reportCaptureEnded(
+      currentCaptureId,
+      Math.round((Date.now() - captureStartedAt) / 1000),
+    );
+  }
+  captureStartedAt = null;
 }
 
 // ─── Transcript events ───────────────────────────────────────────────────

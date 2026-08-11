@@ -79,20 +79,6 @@ pub struct ExtractionRequest {
     pub transcript: String,
 }
 
-// ─── Ollama Native API Types ────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-struct OllamaGenerateRequest {
-    model: String,
-    prompt: String,
-    stream: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct OllamaGenerateResponse {
-    response: String,
-}
-
 // ─── LLM Extraction ─────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -101,15 +87,22 @@ async fn extract_load_data(
     app: AppHandle,
     req: ExtractionRequest,
 ) -> Result<LoadFormDataWithConfidence, String> {
-    let (base_url, model, api_key, is_local) = {
+    // Cloud extraction goes through the `extract` Edge Function (called from
+    // src/main.js), which holds the Ollama key. This command is the
+    // local-Ollama development path only, so the desktop process never needs a
+    // provider credential.
+    let (model, is_local) = {
         let cfg = config.config.lock().unwrap();
-        (
-            cfg.ollama_base_url.clone(),
-            cfg.ollama_model.clone(),
-            cfg.ollama_api_key.clone(),
-            cfg.is_local_ollama(),
-        )
+        (cfg.ollama_model.clone(), cfg.is_local_ollama())
     };
+
+    if !is_local {
+        return Err(
+            "extract_load_data is the local-Ollama dev path only. Cloud extraction goes through \
+             the `extract` Edge Function. Set OLLAMA_BASE_URL=http://localhost:11434 to use this."
+                .to_string(),
+        );
+    }
 
     let prompt = format!(
         r#"You are a logistics data extraction assistant. Given a broker conversation transcript, extract the following fields:
@@ -173,8 +166,9 @@ Transcript:
         req.transcript
     );
 
-    let raw_content = if is_local {
-        // Local Ollama — native ollama-rs
+    // Local Ollama — native ollama-rs. The remote branch is gone: cloud
+    // extraction is the `extract` Edge Function's job now.
+    let raw_content = {
         let ollama = Ollama::default();
         let request = GenerationRequest::new(model, prompt);
         let response: GenerationResponse = ollama
@@ -182,37 +176,6 @@ Transcript:
             .await
             .map_err(|e| format!("Local Ollama generation failed: {}", e))?;
         response.response
-    } else {
-        // Remote Ollama — native /api/generate with auth
-        let api_req = OllamaGenerateRequest {
-            model,
-            prompt,
-            stream: false,
-        };
-
-        let client = reqwest::Client::new();
-        let url = format!("{}/api/generate", base_url.trim_end_matches('/'));
-
-        let mut builder = client.post(&url).json(&api_req);
-        if !api_key.is_empty() {
-            builder = builder.header("Authorization", format!("Bearer {}", api_key));
-        }
-
-        let response = builder.send().await.map_err(|e| format!("HTTP error: {}", e))?;
-        let status = response.status();
-        let body_text = response
-            .text()
-            .await
-            .map_err(|e| format!("Failed to read response body: {}", e))?;
-
-        if !status.is_success() {
-            return Err(format!("Ollama API error {}: {}", status, body_text));
-        }
-
-        let api_response: OllamaGenerateResponse = serde_json::from_str(&body_text)
-            .map_err(|e| format!("Failed to parse Ollama response: {}. Body: {}", e, body_text))?;
-
-        api_response.response
     };
 
     // The LLM response may contain markdown code blocks — strip them
@@ -268,12 +231,14 @@ fn list_devices() -> Vec<AudioDevice> {
 #[tauri::command]
 fn start_capture_cmd(
     state: State<'_, CaptureState>,
-    config: State<'_, ConfigState>,
     app: AppHandle,
     device_id: String,
     mix_system_audio: bool,
+    deepgram_token: String,
 ) -> Result<(), String> {
-    config.config.lock().unwrap().is_valid()?;
+    if deepgram_token.trim().is_empty() {
+        return Err("Missing Deepgram token — is the session still valid?".to_string());
+    }
 
     let mut guard = state.handle.lock().unwrap();
     if guard.is_some() {
@@ -285,11 +250,7 @@ fn start_capture_cmd(
         mix_system_audio,
     };
 
-    let handle = start_capture(
-        app.clone(),
-        config.config.lock().unwrap().deepgram_api_key.clone(),
-        options,
-    )?;
+    let handle = start_capture(app.clone(), deepgram_token, options)?;
     *guard = Some(handle);
     let _ = app.emit(
         "capture:state",
@@ -537,28 +498,16 @@ fn close_main(app: AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-#[derive(Debug, Deserialize)]
-struct SetApiKeysPayload {
-    deepgram_key: String,
-    ollama_key: String,
-}
-
+/// Re-broadcast extracted fields to every window.
+///
+/// When extraction ran inside Rust it emitted `load:fields` itself. Cloud
+/// extraction now happens in the `extract` Edge Function and is called from the
+/// main window's JS, which has no way to reach the widget window — so the
+/// caller hands the parsed result back through here to fan it out. Keeps the
+/// orbital planet chips updating live during a call.
 #[tauri::command]
-fn set_api_keys(
-    state: State<'_, ConfigState>,
-    payload: SetApiKeysPayload,
-) -> Result<(), String> {
-    let mut cfg = state.config.lock().unwrap();
-    cfg.set_keys(payload.deepgram_key, payload.ollama_key);
-    Ok(())
-}
-
-#[tauri::command]
-fn logout(state: State<'_, ConfigState>) -> Result<(), String> {
-    let mut cfg = state.config.lock().unwrap();
-    cfg.deepgram_api_key.clear();
-    cfg.ollama_api_key.clear();
-    Ok(())
+fn broadcast_load_fields(app: AppHandle, fields: LoadFormDataWithConfidence) -> Result<(), String> {
+    app.emit("load:fields", &fields).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -587,8 +536,7 @@ pub fn run() {
             minimize_main,
             toggle_maximize_main,
             close_main,
-            set_api_keys,
-            logout,
+            broadcast_load_fields,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -18,7 +18,13 @@ import {
   getConfidenceBadgeColor,
   needsReview,
 } from './templates.js';
-import { createClient } from '@supabase/supabase-js';
+import {
+  supabase,
+  getDeepgramToken,
+  extractLoad,
+  reportCaptureEnded,
+  fetchUsageSummary,
+} from './api.js';
 import {
   saveLoad,
   fetchLoads,
@@ -28,12 +34,6 @@ import {
   loadToDriverText,
 } from './loads.js';
 import { startTutorial } from './tutorial.js';
-
-// ─── Supabase Config ───────────────────────────────────────────────────────
-const SUPABASE_URL = 'https://tusiipxekbfheihjrjbd.supabase.co';
-const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InR1c2lpcHhla2JmaGVpaGpyamJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MDExMTgsImV4cCI6MjA5OTA3NzExOH0.s86u7JDk0mgYqSm_NNKOQnIHKfWlizRt5xswd5vc1xI';
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
 function tauriInvoke(cmd, args = {}) {
@@ -121,6 +121,9 @@ let currentConfidence = {};
 let devices = [];
 let selectedDeviceId = '';
 let autoExtractEnabled = false;
+// Metering: correlates this session's token grant, extractions and end.
+let currentCaptureId = null;
+let captureStartedAt = null;
 let lastExtractTime = 0;
 const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
 
@@ -190,6 +193,14 @@ const els = {
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
   logoutBtn: document.getElementById('logout-btn'),
+  // Usage display
+  usagePill: document.getElementById('usage-pill'),
+  usagePillLabel: document.getElementById('usage-pill-label'),
+  usagePeriod: document.getElementById('usage-period'),
+  usageToday: document.getElementById('usage-today'),
+  usageMonth: document.getElementById('usage-month'),
+  usageSessions: document.getElementById('usage-sessions'),
+  usageMinutes: document.getElementById('usage-minutes'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -491,13 +502,27 @@ async function startCapture() {
     resetForm();
   }
   try {
+    // Mint a fresh short-lived Deepgram token per capture. This is also the
+    // server-side gate where quota will be enforced, so a failure here is a
+    // legitimate reason not to start.
+    const mixSystemAudio = els.mixSystemCheckbox.checked;
+    const { token, captureId } = await getDeepgramToken(
+      mixSystemAudio ? 'mixed' : 'mic',
+    );
+    currentCaptureId = captureId;
+    captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
       deviceId: selectedDeviceId,
-      mixSystemAudio: els.mixSystemCheckbox.checked,
+      mixSystemAudio,
+      deepgramToken: token,
     });
   } catch (err) {
     console.error('Failed to start capture:', err);
-    alert('Failed to start capture: ' + err);
+    alert(
+      err?.quotaExceeded
+        ? 'You have reached your load limit. Upgrade your plan to keep capturing.'
+        : 'Failed to start capture: ' + (err?.message ?? err),
+    );
   }
 }
 
@@ -508,6 +533,15 @@ async function stopCapture() {
   } catch (err) {
     console.error('Error stopping capture:', err);
   }
+
+  // Report duration before clearing, so we learn actual minutes-per-load.
+  if (currentCaptureId && captureStartedAt) {
+    reportCaptureEnded(
+      currentCaptureId,
+      Math.round((Date.now() - captureStartedAt) / 1000),
+    );
+  }
+  captureStartedAt = null;
 }
 
 function enterListeningUI() {
@@ -644,9 +678,11 @@ async function performExtract(showSpinner = true) {
   }
 
   try {
-    const result = await tauriInvoke('extract_load_data', {
-      req: { transcript: accumulatedTranscript }
-    });
+    const result = await extractLoad(accumulatedTranscript, currentCaptureId);
+
+    // Extraction now happens server-side, so Rust no longer emits `load:fields`
+    // itself — hand the result back so the widget's planet chips still update.
+    tauriInvoke('broadcast_load_fields', { fields: result }).catch(() => {});
 
     currentExtractedData = result.data;
     currentConfidence = result.confidence;
@@ -656,6 +692,11 @@ async function performExtract(showSpinner = true) {
 
     // Persist the extracted load (insert on first save, update thereafter).
     await saveCurrentLoad();
+
+    // Auto-extract fires repeatedly within one call, but each run records a
+    // usage event, so the counter genuinely moves. Refresh it here so the pill
+    // tracks reality instead of going stale until the next sign-in.
+    refreshUsage();
 
     // Return to listening if still capturing, otherwise mark done.
     if (isCapturing) {
@@ -667,6 +708,15 @@ async function performExtract(showSpinner = true) {
     }
   } catch (err) {
     console.error('Auto-extract failed:', err);
+    // Auto-extract retries on a timer, so a transient failure is fine to
+    // swallow. A quota wall is not — it will not resolve on its own, and
+    // silently producing no fields would look like the app is broken.
+    if (err?.quotaExceeded) {
+      autoExtractEnabled = false;
+      alert('You have reached your load limit. Upgrade your plan to keep extracting.');
+    } else if (showSpinner) {
+      alert('Extraction failed: ' + (err?.message ?? err));
+    }
     if (isCapturing) setStatus('listening');
   } finally {
     if (showSpinner) {
@@ -1069,8 +1119,8 @@ function initAuth() {
       if (session) {
         currentUser = session.user;
         hideAuthModal();
-        fetchAndSetApiKeys();
         refreshLoadsList();
+        refreshUsage();
       } else {
         // Token invalid/expired
         localStorage.removeItem('sb-auth-token');
@@ -1096,10 +1146,51 @@ function showSettingsModal() {
   if (!currentUser) return;
   els.settingsUserEmail.textContent = currentUser.email || 'Unknown';
   els.settingsModal.classList.remove('hidden');
+  refreshUsage();
 }
 
 function hideSettingsModal() {
   els.settingsModal.classList.add('hidden');
+}
+
+// ─── Usage Display ──────────────────────────────────────────────────────────
+//
+// Shows plain counts, not "8 / 15". No quota is enforced yet, and inventing a
+// limit to fill the slot would train users to expect a number we haven't
+// decided on. When plans land, the pill becomes "used / allowed" and this is
+// the one place that changes.
+
+function formatDuration(totalSeconds) {
+  const mins = Math.round(totalSeconds / 60);
+  if (mins < 60) return `${mins} min`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+async function refreshUsage() {
+  if (!currentUser) return;
+
+  const usage = await fetchUsageSummary();
+  if (!usage) {
+    // Leave whatever was last shown rather than flashing zeroes, which would
+    // read as "your work wasn't counted".
+    return;
+  }
+
+  els.usagePill.classList.remove('hidden');
+  els.usagePillLabel.textContent =
+    usage.loadsToday === 1 ? '1 load today' : `${usage.loadsToday} loads today`;
+
+  els.usageToday.textContent = usage.loadsToday;
+  els.usageMonth.textContent = usage.loadsMonth;
+  els.usageSessions.textContent = usage.captureSessionsMonth;
+  els.usageMinutes.textContent = formatDuration(usage.audioSecondsMonth);
+
+  els.usagePeriod.textContent = new Date().toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
 }
 
 function toggleAuthMode() {
@@ -1162,8 +1253,8 @@ async function handleAuthSubmit(e) {
     if (session) {
       localStorage.setItem('sb-auth-token', session.access_token);
       currentUser = session.user;
-      await fetchAndSetApiKeys();
       refreshLoadsList();
+      refreshUsage();
       hideAuthModal();
       els.authForm.reset();
     } else {
@@ -1179,31 +1270,8 @@ async function handleAuthSubmit(e) {
   }
 }
 
-async function fetchAndSetApiKeys() {
-  try {
-    const { data, error } = await supabase.from('api_keys').select('*');
-    if (error) {
-      console.error('Failed to fetch API keys:', error);
-      return;
-    }
-
-    const keys = { deepgram: '', ollama: '' };
-    for (const row of data) {
-      if (row.provider === 'deepgram') keys.deepgram = row.key_value;
-      if (row.provider === 'ollama') keys.ollama = row.key_value;
-    }
-
-    await tauriInvoke('set_api_keys', {
-      payload: {
-        deepgram_key: keys.deepgram,
-        ollama_key: keys.ollama,
-      },
-    });
-    console.log('API keys pushed to Rust backend');
-  } catch (err) {
-    console.error('Failed to set API keys in Rust:', err);
-  }
-}
+// fetchAndSetApiKeys() is gone. Provider keys are never sent to the client
+// anymore — see src/api.js and supabase/functions/.
 
 async function handleLogout() {
   try {
@@ -1216,13 +1284,13 @@ async function handleLogout() {
   currentLoadId = null;
   loadsList = [];
   renderLoadsList();
+  // Don't leave the previous user's counts on screen for the next sign-in.
+  els.usagePill.classList.add('hidden');
+  els.usagePillLabel.textContent = '—';
   hideSettingsModal();
   showAuthModal();
-  try {
-    await tauriInvoke('logout');
-  } catch (err) {
-    console.error('Logout command error:', err);
-  }
+  // No `logout` command anymore: Rust holds no credentials to clear, since the
+  // Deepgram token is passed per-capture and never stored.
 }
 
 // ─── Event Listeners ────────────────────────────────────────────────────────
@@ -1264,6 +1332,7 @@ window.addEventListener('DOMContentLoaded', () => {
   els.authForm.addEventListener('submit', handleAuthSubmit);
   els.authToggleBtn.addEventListener('click', toggleAuthMode);
   els.settingsBtn.addEventListener('click', showSettingsModal);
+  els.usagePill.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
   els.logoutBtn.addEventListener('click', handleLogout);
 
