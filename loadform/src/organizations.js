@@ -110,7 +110,9 @@ export async function inviteMember(supabase, orgId, email, role, invitedByUserId
 }
 
 /** Remove a member, or revoke a pending invite (owner/admin only for someone
- * else's row — RLS-enforced; also usable by an invitee declining their own). */
+ * else's row — RLS-enforced; also usable by an invitee declining their own).
+ * A removed member's already-created loads keep their org_id and stay
+ * visible on the dashboard — only the membership row goes away. */
 export async function removeMember(supabase, memberRowId) {
   if (!supabase || !memberRowId) return { ok: false };
   const { error } = await supabase.from('organization_members').delete().eq('id', memberRowId);
@@ -119,4 +121,90 @@ export async function removeMember(supabase, memberRowId) {
     return { ok: false, error: error.message };
   }
   return { ok: true };
+}
+
+/** Change a member's role between 'admin' and 'dispatcher' (owner/admin only
+ * — RLS-enforced). The owner's role is fixed and never passed here. */
+export async function updateMemberRole(supabase, memberRowId, role) {
+  if (!supabase || !memberRowId || !role) return { ok: false };
+  const { error } = await supabase
+    .from('organization_members')
+    .update({ role })
+    .eq('id', memberRowId);
+  if (error) {
+    console.error('updateMemberRole failed:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+/** Fetch every load tagged with this org (owner/admin only — RLS-enforced).
+ * Only the columns the dashboard aggregates, not full load detail. */
+export async function fetchOrgLoads(supabase, orgId) {
+  if (!supabase || !orgId) return [];
+  const { data, error } = await supabase
+    .from('loads')
+    .select('user_id, status, created_at')
+    .eq('org_id', orgId);
+  if (error) {
+    console.error('fetchOrgLoads failed:', error);
+    return [];
+  }
+  return data || [];
+}
+
+/**
+ * Roll raw org loads up into one row of stats per dispatcher: total loads,
+ * loads in the last 7/30 days, and active/completed counts. Members with no
+ * loads yet still appear (at zero); loads from a dispatcher who has since
+ * left the org are grouped under a synthetic "former member" bucket instead
+ * of being dropped, so historical activity isn't silently lost from view.
+ */
+export function aggregateDispatcherStats(loads, members) {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const byUser = new Map();
+
+  for (const m of members) {
+    if (m.status !== 'active' || !m.user_id) continue;
+    byUser.set(m.user_id, {
+      userId: m.user_id,
+      email: m.invited_email,
+      role: m.role,
+      total: 0,
+      last7d: 0,
+      last30d: 0,
+      active: 0,
+      completed: 0,
+    });
+  }
+
+  for (const load of loads || []) {
+    let stat = byUser.get(load.user_id);
+    if (!stat) {
+      const key = `former:${load.user_id}`;
+      stat = byUser.get(key);
+      if (!stat) {
+        stat = {
+          userId: load.user_id,
+          email: 'Former member',
+          role: null,
+          total: 0,
+          last7d: 0,
+          last30d: 0,
+          active: 0,
+          completed: 0,
+        };
+        byUser.set(key, stat);
+      }
+    }
+    stat.total += 1;
+    const ageMs = now - new Date(load.created_at).getTime();
+    if (ageMs <= 7 * DAY_MS) stat.last7d += 1;
+    if (ageMs <= 30 * DAY_MS) stat.last30d += 1;
+    if (load.status === 'completed') stat.completed += 1;
+    else stat.active += 1;
+  }
+
+  return Array.from(byUser.values()).sort((a, b) => b.total - a.total);
 }

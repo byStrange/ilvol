@@ -37,6 +37,9 @@ import {
   fetchOrgMembers,
   inviteMember,
   removeMember,
+  updateMemberRole,
+  fetchOrgLoads,
+  aggregateDispatcherStats,
 } from './organizations.js';
 
 // ─── Supabase Config ───────────────────────────────────────────────────────
@@ -237,6 +240,14 @@ const els = {
   orgInviteRole: document.getElementById('org-invite-role'),
   orgRosterList: document.getElementById('org-roster-list'),
   orgLeaveBtn: document.getElementById('org-leave-btn'),
+  // Organization dashboard elements
+  orgDashboardOpenBtn: document.getElementById('org-dashboard-open-btn'),
+  orgDashboardModal: document.getElementById('org-dashboard-modal'),
+  orgDashboardCloseBtn: document.getElementById('org-dashboard-close-btn'),
+  orgDashboardOrgName: document.getElementById('org-dashboard-org-name'),
+  orgDashboardSummary: document.getElementById('org-dashboard-summary'),
+  orgDashboardTableBody: document.getElementById('org-dashboard-table-body'),
+  orgDashboardEmpty: document.getElementById('org-dashboard-empty'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -1343,12 +1354,21 @@ function renderOrgModal() {
       els.orgRosterList.innerHTML = '';
       for (const member of orgRoster) {
         const label = member.status === 'invited' ? `${member.invited_email} (pending)` : member.invited_email;
-        const canRemove = member.role !== 'owner';
+        const canManage = member.role !== 'owner';
+        const roleControl = canManage
+          ? `<select class="lf-select w-auto text-xs py-1" data-org-role-select data-member-id="${member.id}">
+               <option value="dispatcher"${member.role === 'dispatcher' ? ' selected' : ''}>Dispatcher</option>
+               <option value="admin"${member.role === 'admin' ? ' selected' : ''}>Admin</option>
+             </select>`
+          : `<span class="text-slate-500 text-xs">owner</span>`;
         const row = document.createElement('div');
-        row.className = 'flex items-center justify-between p-3 rounded-xl bg-slate-950/40 border border-white/5';
+        row.className = 'flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-950/40 border border-white/5';
         row.innerHTML = `
-          <span class="text-sm text-slate-300 truncate">${escapeHtml(label)} <span class="text-slate-500">· ${escapeHtml(member.role)}</span></span>
-          ${canRemove ? `<button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium shrink-0" data-org-action="remove" data-member-id="${member.id}">Remove</button>` : ''}`;
+          <span class="text-sm text-slate-300 truncate">${escapeHtml(label)}</span>
+          <span class="flex items-center gap-2 shrink-0">
+            ${roleControl}
+            ${canManage ? `<button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium" data-org-action="remove" data-member-id="${member.id}">Remove</button>` : ''}
+          </span>`;
         els.orgRosterList.appendChild(row);
       }
     }
@@ -1413,6 +1433,71 @@ async function handleOrgLeave() {
   if (!currentMembership) return;
   await removeMember(supabase, currentMembership.id);
   await showOrgModal();
+}
+
+async function handleOrgRosterRoleChange(e) {
+  const select = e.target.closest('[data-org-role-select]');
+  if (!select) return;
+  hideOrgError();
+  const { ok, error } = await updateMemberRole(supabase, select.dataset.memberId, select.value);
+  if (!ok) {
+    showOrgError(error || 'Could not update role');
+  }
+  orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
+  renderOrgModal();
+}
+
+// ─── Organization dashboard ─────────────────────────────────────────────────
+
+function dashboardTile(label, value) {
+  return `<div class="p-3 rounded-xl bg-slate-950/40 border border-white/5 text-center">
+    <p class="text-xl font-bold text-white tabular-nums">${value}</p>
+    <p class="text-xs text-slate-500 mt-0.5">${escapeHtml(label)}</p>
+  </div>`;
+}
+
+async function showOrgDashboard() {
+  if (!currentMembership) return;
+  els.orgDashboardOrgName.textContent = currentMembership.organizations?.name || '';
+  els.orgDashboardModal.classList.remove('hidden');
+  els.orgDashboardModal.classList.add('flex');
+
+  const [loads, members] = await Promise.all([
+    fetchOrgLoads(supabase, currentMembership.org_id),
+    fetchOrgMembers(supabase, currentMembership.org_id),
+  ]);
+  renderOrgDashboard(aggregateDispatcherStats(loads, members), loads);
+}
+
+function hideOrgDashboard() {
+  els.orgDashboardModal.classList.add('hidden');
+  els.orgDashboardModal.classList.remove('flex');
+}
+
+function renderOrgDashboard(stats, loads) {
+  const activeDispatcherCount = stats.filter((s) => s.role).length;
+  const last7dTotal = stats.reduce((sum, s) => sum + s.last7d, 0);
+
+  els.orgDashboardSummary.innerHTML =
+    dashboardTile('Total loads', loads.length) +
+    dashboardTile('Last 7 days', last7dTotal) +
+    dashboardTile('Dispatchers', activeDispatcherCount);
+
+  els.orgDashboardEmpty.classList.toggle('hidden', stats.length > 0);
+  els.orgDashboardTableBody.innerHTML = '';
+
+  for (const s of stats) {
+    const row = document.createElement('tr');
+    row.className = 'border-b border-white/5 last:border-0';
+    row.innerHTML = `
+      <td class="py-2.5 text-slate-200">${escapeHtml(s.email)}${s.role ? '' : ' <span class="text-slate-500 text-xs">(left org)</span>'}</td>
+      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.total}</td>
+      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.last7d}</td>
+      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.last30d}</td>
+      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.active}</td>
+      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.completed}</td>`;
+    els.orgDashboardTableBody.appendChild(row);
+  }
 }
 
 async function fetchAndSetApiKeys() {
@@ -1512,6 +1597,7 @@ async function handleLogout() {
   renderLoadsList();
   hideSettingsModal();
   hideOrgModal();
+  hideOrgDashboard();
   showAuthModal();
   try {
     await tauriInvoke('logout');
@@ -1572,9 +1658,17 @@ window.addEventListener('DOMContentLoaded', () => {
   els.orgInviteForm.addEventListener('submit', handleOrgInviteSubmit);
   els.orgInvitesList.addEventListener('click', handleOrgModalClick);
   els.orgRosterList.addEventListener('click', handleOrgModalClick);
+  els.orgRosterList.addEventListener('change', handleOrgRosterRoleChange);
   els.orgLeaveBtn.addEventListener('click', handleOrgLeave);
   els.orgModal.addEventListener('click', (e) => {
     if (e.target === els.orgModal) hideOrgModal();
+  });
+
+  // Organization dashboard listeners
+  els.orgDashboardOpenBtn.addEventListener('click', showOrgDashboard);
+  els.orgDashboardCloseBtn.addEventListener('click', hideOrgDashboard);
+  els.orgDashboardModal.addEventListener('click', (e) => {
+    if (e.target === els.orgDashboardModal) hideOrgDashboard();
   });
 
   // Show the saved provider immediately; initAuth's key fetch is what actually

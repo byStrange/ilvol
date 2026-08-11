@@ -181,6 +181,14 @@
           </div>
 
           <div id="org-admin-section" class="hidden">
+            <button
+              id="org-dashboard-open-btn"
+              type="button"
+              class="lf-btn w-full py-2.5 mb-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium"
+            >
+              View dashboard
+            </button>
+
             <label class="block text-xs text-slate-500 mb-1.5">Invite a dispatcher</label>
             <form id="org-invite-form" class="flex gap-2 mb-4">
               <input
@@ -211,6 +219,38 @@
             Leave organization
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- Organization Dashboard Modal -->
+    <div id="org-dashboard-modal" class="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+      <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+        <div class="flex items-center justify-between mb-1">
+          <h2 class="text-lg font-bold text-white">Dashboard</h2>
+          <button id="org-dashboard-close-btn" type="button" class="lf-icon-btn h-8 w-8 rounded-lg text-slate-300 flex items-center justify-center" aria-label="Close">
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+          </button>
+        </div>
+        <p id="org-dashboard-org-name" class="text-xs text-slate-500 mb-5"></p>
+
+        <div id="org-dashboard-summary" class="grid grid-cols-3 gap-3 mb-6"></div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-xs text-slate-500 border-b border-white/5">
+                <th class="pb-2 font-medium">Dispatcher</th>
+                <th class="pb-2 font-medium text-right">Total</th>
+                <th class="pb-2 font-medium text-right">7 days</th>
+                <th class="pb-2 font-medium text-right">30 days</th>
+                <th class="pb-2 font-medium text-right">Active</th>
+                <th class="pb-2 font-medium text-right">Completed</th>
+              </tr>
+            </thead>
+            <tbody id="org-dashboard-table-body"></tbody>
+          </table>
+        </div>
+        <p id="org-dashboard-empty" class="text-sm text-slate-500 text-center py-8 hidden">No loads recorded for this organization yet.</p>
       </div>
     </div>
 
