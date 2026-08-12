@@ -1122,3 +1122,239 @@ select:focus-visible {
 button {
   user-select: none;
 }
+/* ─── Admin console ────────────────────────────────────────────────────── */
+/*
+ * The admin console is a full app shell, not a panel: a fixed sidebar plus a
+ * scrolling main column that fills the window. Org owners/admins spend all
+ * their time here, so it gets the whole viewport rather than living inside
+ * the capture layout's centred max-width column.
+ */
+
+.lf-admin-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.lf-admin-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 15rem;
+  flex-shrink: 0;
+  padding: 1.25rem 0.875rem 1rem;
+  border-right: 1px solid var(--lf-border);
+  background: rgba(2, 6, 23, 0.35);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+.lf-admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.lf-admin-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.625rem;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--lf-muted-foreground);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.lf-admin-nav-item svg {
+  height: 1rem;
+  width: 1rem;
+  flex-shrink: 0;
+}
+
+.lf-admin-nav-item:hover {
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--lf-foreground);
+}
+
+.lf-admin-nav-item.is-active {
+  background: rgba(16, 185, 129, 0.12);
+  border-color: rgba(16, 185, 129, 0.22);
+  color: #6ee7b7;
+}
+
+.lf-admin-nav-badge {
+  margin-left: auto;
+  min-width: 1.25rem;
+  padding: 0 0.3rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--lf-muted-foreground);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.lf-admin-nav-badge:empty {
+  display: none;
+}
+
+.lf-admin-switch {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.5rem 0.625rem;
+  border-radius: 0.625rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(51, 65, 85, 0.35);
+  color: #cbd5e1;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.lf-admin-switch svg {
+  height: 0.9375rem;
+  width: 0.9375rem;
+  flex-shrink: 0;
+}
+
+.lf-admin-switch:hover {
+  background: rgba(51, 65, 85, 0.6);
+  color: var(--lf-foreground);
+}
+
+.lf-admin-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.lf-admin-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.5rem;
+  border-bottom: 1px solid var(--lf-border);
+  flex-shrink: 0;
+}
+
+.lf-admin-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: #475569 transparent;
+}
+
+.lf-admin-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.lf-admin-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.lf-admin-body::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+/* KPI tile */
+.lf-kpi {
+  padding: 1rem;
+  border-radius: 1rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.45);
+}
+
+.lf-kpi-value {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--lf-foreground);
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.lf-kpi-label {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--lf-muted-foreground);
+}
+
+/* Horizontal share bar in the performance table */
+.lf-share-track {
+  height: 0.375rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  overflow: hidden;
+}
+
+.lf-share-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--lf-primary);
+}
+
+/* Roster / activity row */
+.lf-admin-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(2, 6, 23, 0.35);
+}
+
+.lf-admin-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--lf-muted-foreground);
+}
+
+.lf-admin-tag.is-owner {
+  background: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+}
+
+.lf-admin-tag.is-pending {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fcd34d;
+}
+
+/* Narrow windows: collapse the sidebar to an icon rail. */
+@media (max-width: 720px) {
+  .lf-admin-sidebar {
+    width: 3.75rem;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .lf-admin-sidebar .leading-tight,
+  .lf-admin-nav-item span,
+  .lf-admin-switch span,
+  #admin-user-email {
+    display: none;
+  }
+
+  .lf-admin-nav-item,
+  .lf-admin-switch {
+    justify-content: center;
+  }
+}

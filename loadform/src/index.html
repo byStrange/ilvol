@@ -180,35 +180,16 @@
             <p id="org-member-role" class="text-xs text-slate-500 mt-1"></p>
           </div>
 
+          <!-- Admins manage the team in the admin console, not in here. -->
           <div id="org-admin-section" class="hidden">
             <button
-              id="org-dashboard-open-btn"
+              id="org-console-open-btn"
               type="button"
-              class="lf-btn w-full py-2.5 mb-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium"
+              class="lf-btn lf-btn-primary w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-sm font-medium"
             >
-              View dashboard
+              Open admin console
             </button>
-
-            <label class="block text-xs text-slate-500 mb-1.5">Invite a dispatcher</label>
-            <form id="org-invite-form" class="flex gap-2 mb-4">
-              <input
-                id="org-invite-email"
-                type="email"
-                placeholder="dispatcher@email.com"
-                class="lf-input flex-1"
-                autocomplete="off"
-              />
-              <select id="org-invite-role" class="lf-select w-auto">
-                <option value="dispatcher">Dispatcher</option>
-                <option value="admin">Admin</option>
-              </select>
-              <button type="submit" class="lf-btn lf-btn-primary py-2 px-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-sm font-medium">
-                Invite
-              </button>
-            </form>
-
-            <label class="block text-xs text-slate-500 mb-1.5">Members</label>
-            <div id="org-roster-list" class="space-y-2"></div>
+            <p class="text-xs text-slate-500 mt-2">Team, dispatcher activity, and organization settings.</p>
           </div>
 
           <button
@@ -222,35 +203,201 @@
       </div>
     </div>
 
-    <!-- Organization Dashboard Modal -->
-    <div id="org-dashboard-modal" class="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
-      <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-2xl max-h-[85vh] overflow-y-auto">
-        <div class="flex items-center justify-between mb-1">
-          <h2 class="text-lg font-bold text-white">Dashboard</h2>
-          <button id="org-dashboard-close-btn" type="button" class="lf-icon-btn h-8 w-8 rounded-lg text-slate-300 flex items-center justify-center" aria-label="Close">
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-          </button>
-        </div>
-        <p id="org-dashboard-org-name" class="text-xs text-slate-500 mb-5"></p>
+    <!--
+      Admin console — the whole app for an org owner/admin, not a panel inside
+      it. Peer of #app rather than a child: exactly one of the two is visible
+      at a time (see setAppMode in main.js), so admins never see the capture
+      UI they don't use unless they deliberately switch to it.
+    -->
+    <div id="admin-view" class="hidden">
+      <div class="lf-admin-shell">
+        <!-- Sidebar -->
+        <aside class="lf-admin-sidebar">
+          <div class="flex items-center gap-2.5 px-1 pb-5" data-tauri-drag-region>
+            <span class="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-500/15 ring-1 ring-inset ring-emerald-500/20 shrink-0">
+              <svg class="h-5 w-5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2" /><path d="M15 18H9" /><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14" /><circle cx="17" cy="18" r="2" /><circle cx="7" cy="18" r="2" />
+              </svg>
+            </span>
+            <div class="leading-tight min-w-0">
+              <p id="admin-org-name" class="text-sm font-semibold tracking-tight text-white truncate">Organization</p>
+              <p id="admin-org-role" class="text-[11px] text-slate-500">Admin console</p>
+            </div>
+          </div>
 
-        <div id="org-dashboard-summary" class="grid grid-cols-3 gap-3 mb-6"></div>
+          <nav class="lf-admin-nav" aria-label="Admin sections">
+            <button type="button" class="lf-admin-nav-item is-active" data-admin-section="overview">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+              <span>Overview</span>
+            </button>
+            <button type="button" class="lf-admin-nav-item" data-admin-section="team">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+              <span>Team</span>
+              <span id="admin-team-count" class="lf-admin-nav-badge"></span>
+            </button>
+            <button type="button" class="lf-admin-nav-item" data-admin-section="activity">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+              <span>Activity</span>
+            </button>
+            <button type="button" class="lf-admin-nav-item" data-admin-section="settings">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+              <span>Settings</span>
+            </button>
+          </nav>
 
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead>
-              <tr class="text-left text-xs text-slate-500 border-b border-white/5">
-                <th class="pb-2 font-medium">Dispatcher</th>
-                <th class="pb-2 font-medium text-right">Total</th>
-                <th class="pb-2 font-medium text-right">7 days</th>
-                <th class="pb-2 font-medium text-right">30 days</th>
-                <th class="pb-2 font-medium text-right">Active</th>
-                <th class="pb-2 font-medium text-right">Completed</th>
-              </tr>
-            </thead>
-            <tbody id="org-dashboard-table-body"></tbody>
-          </table>
-        </div>
-        <p id="org-dashboard-empty" class="text-sm text-slate-500 text-center py-8 hidden">No loads recorded for this organization yet.</p>
+          <div class="mt-auto pt-4 space-y-2">
+            <button id="admin-capture-btn" type="button" class="lf-admin-switch">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>
+              <span>Capture a load</span>
+            </button>
+            <p id="admin-user-email" class="px-2 text-[11px] text-slate-600 truncate"></p>
+          </div>
+        </aside>
+
+        <!-- Main panel -->
+        <main class="lf-admin-main">
+          <header class="lf-admin-topbar" data-tauri-drag-region>
+            <div class="min-w-0">
+              <h1 id="admin-section-title" class="text-lg font-bold text-white">Overview</h1>
+              <p id="admin-section-sub" class="text-xs text-slate-500 mt-0.5">How your dispatchers are performing.</p>
+            </div>
+            <div class="flex items-center gap-3">
+              <button id="admin-refresh-btn" type="button" class="lf-icon-btn h-9 w-9 rounded-xl text-slate-300 flex items-center justify-center" title="Refresh">
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+              </button>
+              <div class="lf-win-controls" aria-label="Window controls">
+                <button id="admin-win-minimize" class="lf-win-btn" title="Minimize" aria-label="Minimize">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14" /></svg>
+                </button>
+                <button id="admin-win-maximize" class="lf-win-btn" title="Maximize" aria-label="Maximize">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+                </button>
+                <button id="admin-win-close" class="lf-win-btn lf-win-btn-close" title="Close" aria-label="Close">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18" /><path d="m6 6 12 12" /></svg>
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <div class="lf-admin-body">
+            <p id="admin-error" class="text-sm text-red-400 mb-4 hidden"></p>
+
+            <!-- Overview -->
+            <section id="admin-panel-overview" class="lf-admin-panel">
+              <div id="admin-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6"></div>
+
+              <div class="glass glass-lit rounded-2xl p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <h2 class="text-sm font-semibold text-white">Dispatcher performance</h2>
+                  <span class="text-xs text-slate-500">Loads captured</span>
+                </div>
+                <div class="overflow-x-auto">
+                  <table class="w-full text-sm">
+                    <thead>
+                      <tr class="text-left text-xs text-slate-500 border-b border-white/5">
+                        <th class="pb-2 font-medium">Dispatcher</th>
+                        <th class="pb-2 font-medium text-right">Total</th>
+                        <th class="pb-2 font-medium text-right">7 days</th>
+                        <th class="pb-2 font-medium text-right">30 days</th>
+                        <th class="pb-2 font-medium text-right">Active</th>
+                        <th class="pb-2 font-medium text-right">Completed</th>
+                        <th class="pb-2 font-medium w-28">Share</th>
+                      </tr>
+                    </thead>
+                    <tbody id="admin-stats-body"></tbody>
+                  </table>
+                </div>
+                <p id="admin-stats-empty" class="text-sm text-slate-500 text-center py-8 hidden">
+                  No loads recorded for this organization yet. Invite dispatchers from the Team tab — their loads show up here as they capture them.
+                </p>
+              </div>
+            </section>
+
+            <!-- Team -->
+            <section id="admin-panel-team" class="lf-admin-panel hidden">
+              <div class="glass glass-lit rounded-2xl p-5 mb-5">
+                <h2 class="text-sm font-semibold text-white mb-1">Invite a dispatcher</h2>
+                <p class="text-xs text-slate-500 mb-4">They sign in with this email and their loads roll up to this organization.</p>
+                <form id="admin-invite-form" class="flex flex-col sm:flex-row gap-2">
+                  <input
+                    id="admin-invite-email"
+                    type="email"
+                    placeholder="dispatcher@email.com"
+                    class="lf-input flex-1"
+                    autocomplete="off"
+                  />
+                  <select id="admin-invite-role" class="lf-select sm:w-auto">
+                    <option value="dispatcher">Dispatcher</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                  <button type="submit" class="lf-btn lf-btn-primary py-2 px-4 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-sm font-medium whitespace-nowrap">
+                    Send invite
+                  </button>
+                </form>
+              </div>
+
+              <div class="glass glass-lit rounded-2xl p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <h2 class="text-sm font-semibold text-white">Members</h2>
+                  <span id="admin-seat-summary" class="text-xs text-slate-500"></span>
+                </div>
+                <div id="admin-roster" class="space-y-2"></div>
+              </div>
+            </section>
+
+            <!-- Activity -->
+            <section id="admin-panel-activity" class="lf-admin-panel hidden">
+              <div class="glass glass-lit rounded-2xl p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <h2 class="text-sm font-semibold text-white">Recent loads</h2>
+                  <select id="admin-activity-filter" class="lf-select w-auto text-xs py-1.5">
+                    <option value="all">All dispatchers</option>
+                  </select>
+                </div>
+                <div id="admin-activity-list" class="space-y-2"></div>
+                <p id="admin-activity-empty" class="text-sm text-slate-500 text-center py-8 hidden">
+                  Nothing captured yet.
+                </p>
+              </div>
+            </section>
+
+            <!-- Settings -->
+            <section id="admin-panel-settings" class="lf-admin-panel hidden">
+              <div class="glass glass-lit rounded-2xl p-5 mb-5 max-w-lg">
+                <h2 class="text-sm font-semibold text-white mb-1">Organization name</h2>
+                <p class="text-xs text-slate-500 mb-4">Shown to everyone on the team.</p>
+                <form id="admin-org-name-form" class="flex gap-2">
+                  <input id="admin-org-name-input" type="text" class="lf-input flex-1" autocomplete="off" />
+                  <button type="submit" class="lf-btn py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium">
+                    Save
+                  </button>
+                </form>
+                <p id="admin-org-name-saved" class="text-xs text-emerald-400 mt-2 hidden">Saved.</p>
+              </div>
+
+              <div class="glass glass-lit rounded-2xl p-5 mb-5 max-w-lg">
+                <h2 class="text-sm font-semibold text-white mb-1">Billing</h2>
+                <p class="text-xs text-slate-500 mb-3">
+                  One invoice for the whole team, billed per active seat.
+                </p>
+                <div id="admin-billing-preview" class="text-sm text-slate-300"></div>
+                <p class="text-xs text-slate-600 mt-3">Consolidated invoicing isn't switched on yet — seat counts shown for reference.</p>
+              </div>
+
+              <div class="glass glass-lit rounded-2xl p-5 max-w-lg">
+                <h2 class="text-sm font-semibold text-white mb-1">Your membership</h2>
+                <p id="admin-membership-note" class="text-xs text-slate-500 mb-3"></p>
+                <button
+                  id="admin-leave-btn"
+                  type="button"
+                  class="lf-btn py-2 px-4 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-sm font-medium border border-red-500/30 hidden"
+                >
+                  Leave organization
+                </button>
+              </div>
+            </section>
+          </div>
+        </main>
       </div>
     </div>
 
@@ -273,6 +420,17 @@
             <span class="lf-dot"></span>
             <span id="status-badge-label">Ready</span>
           </span>
+          <!-- Only rendered for org owners/admins (see updateAdminEntryPoints). -->
+          <button
+            id="admin-mode-btn"
+            class="lf-icon-btn h-9 rounded-xl text-emerald-300 items-center justify-center gap-1.5 px-3 text-sm font-medium hidden"
+            title="Switch to the admin console"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <span class="hidden sm:inline">Admin</span>
+          </button>
           <button
             id="help-btn"
             class="lf-help-btn h-9 w-9 rounded-xl flex items-center justify-center"

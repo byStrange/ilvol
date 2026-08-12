@@ -178,6 +178,39 @@ export async function fetchOrgLoads(supabase, orgId) {
   return data || [];
 }
 
+/** Fetch the org's most recent loads with enough detail for the activity
+ * feed (org admins may see full load content — RLS grants the whole row).
+ * Capped rather than unbounded: the feed only ever shows the recent tail. */
+export async function fetchOrgRecentLoads(supabase, orgId, limit = 40) {
+  if (!supabase || !orgId) return [];
+  const { data, error } = await supabase
+    .from('loads')
+    .select('id, user_id, title, status, pickup_location, delivery_location, rate, equipment_type, created_at')
+    .eq('org_id', orgId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error('fetchOrgRecentLoads failed:', error);
+    return [];
+  }
+  return data || [];
+}
+
+/** Rename an organization (owner/admin only — RLS-enforced). Only `name` is
+ * updatable at all: the column-level grant in the follow-up migration keeps
+ * this call from being widened into an ownership or plan change. */
+export async function updateOrganizationName(supabase, orgId, name) {
+  const trimmed = (name || '').trim();
+  if (!supabase || !orgId) return { ok: false };
+  if (!trimmed) return { ok: false, error: 'Organization name is required' };
+  const { error } = await supabase.from('organizations').update({ name: trimmed }).eq('id', orgId);
+  if (error) {
+    console.error('updateOrganizationName failed:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
 /**
  * Roll raw org loads up into one row of stats per dispatcher: total loads,
  * loads in the last 7/30 days, and active/completed counts. Members with no
