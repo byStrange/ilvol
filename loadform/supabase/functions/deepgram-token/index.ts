@@ -17,6 +17,7 @@
 
 import { json, requireUser, serveJson } from '../_shared/auth.ts';
 import { recordUsage } from '../_shared/usage.ts';
+import { checkQuota, quotaExceededBody } from '../_shared/quota.ts';
 
 const DEEPGRAM_API_KEY = Deno.env.get('DEEPGRAM_API_KEY')!;
 
@@ -29,9 +30,13 @@ Deno.serve(
     const { user } = await requireUser(req);
 
     // ─── Quota gate ──────────────────────────────────────────────────────
-    // TODO(billing): check the caller's plan + remaining daily/monthly quota
-    // here and return 402 when exhausted. This is the right chokepoint: no
-    // token means no transcription, and it cannot be bypassed client-side.
+    // The chokepoint: no token means no transcription and no Deepgram spend,
+    // and it cannot be bypassed client-side. Checked before the grant call so
+    // an over-quota user costs us nothing at all.
+    const quota = await checkQuota(user.id, 'capture');
+    if (!quota.allowed) {
+      return json(quotaExceededBody(quota), 402);
+    }
 
     if (!DEEPGRAM_API_KEY) {
       return json({ error: 'DEEPGRAM_API_KEY secret is not configured' }, 500);
@@ -96,6 +101,10 @@ Deno.serve(
       access_token: grant.access_token,
       expires_in: grant.expires_in,
       capture_id: captureId,
+      // Loads left today once this session is counted; null when unlimited.
+      // Saves the client a follow-up round trip just to refresh the counter.
+      captures_remaining: quota.remaining,
+      captures_limit: quota.status?.captures_limit ?? null,
     });
   }),
 );

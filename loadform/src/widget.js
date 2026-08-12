@@ -162,6 +162,9 @@ const card = document.getElementById('widget');
 const textEl = document.getElementById('wf-text');
 const interimEl = document.getElementById('wf-interim');
 const placeholderEl = document.getElementById('wf-placeholder');
+// Kept so a transient message (e.g. the quota wall) can be cleared back to
+// the normal prompt — nothing else ever rewrites this text.
+const placeholderDefaultText = placeholderEl.textContent;
 const micBtn = document.getElementById('wf-mic');
 const stopBtn = document.getElementById('wf-stop');
 const closeBtn = document.getElementById('wf-close');
@@ -442,6 +445,7 @@ async function startCapture() {
   if (!selectedDeviceId) await pickDevice();
 
   try {
+    placeholderEl.textContent = placeholderDefaultText;
     const { token, captureId } = await getDeepgramToken('mic');
     currentCaptureId = captureId;
     captureStartedAt = Date.now();
@@ -452,6 +456,14 @@ async function startCapture() {
     });
   } catch (err) {
     const msg = String(err?.message ?? err);
+    if (err?.quotaExceeded) {
+      // The widget has no alert affordance and hiding this in the console
+      // would leave the user tapping a mic that silently does nothing. The
+      // placeholder is the one always-visible line of text here.
+      placeholderEl.textContent = err.message;
+      placeholderEl.style.display = '';
+      return;
+    }
     if (!msg.includes('already running')) {
       console.error('Widget start_capture_cmd error:', err);
     }

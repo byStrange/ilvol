@@ -15,6 +15,7 @@
 import { json, requireUser, serveJson } from '../_shared/auth.ts';
 import { llmCostUsd, recordUsage } from '../_shared/usage.ts';
 import { buildPrompt, stripFences } from '../_shared/prompt.ts';
+import { checkQuota, quotaExceededBody } from '../_shared/quota.ts';
 
 const OLLAMA_BASE_URL = Deno.env.get('OLLAMA_BASE_URL') ?? 'https://ollama.com';
 const OLLAMA_API_KEY = Deno.env.get('OLLAMA_API_KEY')!;
@@ -33,8 +34,17 @@ Deno.serve(
     }
 
     // ─── Quota gate ──────────────────────────────────────────────────────
-    // TODO(billing): check plan + remaining quota before spending tokens, and
-    // return 402 when exhausted.
+    // Checked against the daily extraction ceiling, not the load cap. Auto-
+    // extract re-runs every few seconds during a live call, so one load is
+    // many extractions — capping this at 3 would cut a dispatcher off
+    // mid-sentence. The capture gate in deepgram-token is what limits loads;
+    // this bounds a runaway auto-extract loop, and bounds someone calling this
+    // function directly without ever capturing (the anon key ships in the
+    // desktop binary, so that path is reachable).
+    const quota = await checkQuota(user.id, 'extraction');
+    if (!quota.allowed) {
+      return json(quotaExceededBody(quota), 402);
+    }
 
     if (!OLLAMA_API_KEY) {
       return json({ error: 'OLLAMA_API_KEY secret is not configured' }, 500);

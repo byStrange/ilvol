@@ -24,6 +24,7 @@ import {
   extractLoad,
   reportCaptureEnded,
   fetchUsageSummary,
+  fetchQuotaStatus,
 } from './api.js';
 import {
   saveLoad,
@@ -232,7 +233,6 @@ const els = {
   authToggleText: document.getElementById('auth-toggle-text'),
   authError: document.getElementById('auth-error'),
   settingsBtn: document.getElementById('settings-btn'),
-  widgetBtn: document.getElementById('widget-btn'),
   settingsModal: document.getElementById('settings-modal'),
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
@@ -243,7 +243,11 @@ const els = {
   usagePeriod: document.getElementById('usage-period'),
   usageToday: document.getElementById('usage-today'),
   usageMonth: document.getElementById('usage-month'),
-  usageSessions: document.getElementById('usage-sessions'),
+  usageExtractions: document.getElementById('usage-extractions'),
+  usageQuotaRow: document.getElementById('usage-quota-row'),
+  usageQuotaLabel: document.getElementById('usage-quota-label'),
+  usageQuotaFill: document.getElementById('usage-quota-fill'),
+  usageQuotaNote: document.getElementById('usage-quota-note'),
   usageMinutes: document.getElementById('usage-minutes'),
   // Organization elements
   orgOpenBtn: document.getElementById('org-open-btn'),
@@ -609,10 +613,14 @@ async function startCapture() {
     // server-side gate where quota will be enforced, so a failure here is a
     // legitimate reason not to start.
     const mixSystemAudio = els.mixSystemCheckbox.checked;
-    const { token, captureId } = await getDeepgramToken(
-      mixSystemAudio ? 'mixed' : 'mic',
-    );
+    const { token, captureId, capturesRemaining, capturesLimit } =
+      await getDeepgramToken(mixSystemAudio ? 'mixed' : 'mic');
     currentCaptureId = captureId;
+    // The grant response already carries the post-increment count, so the
+    // counter can drop immediately without another round trip mid-capture.
+    if (capturesLimit !== null && capturesRemaining !== null) {
+      els.usagePillLabel.textContent = `${capturesRemaining} of ${capturesLimit} loads left`;
+    }
     captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
       deviceId: selectedDeviceId,
@@ -621,11 +629,14 @@ async function startCapture() {
     });
   } catch (err) {
     console.error('Failed to start capture:', err);
+    // The server's message names the actual limit and when it resets, so
+    // prefer it over anything hardcoded here.
     alert(
       err?.quotaExceeded
-        ? 'You have reached your load limit. Upgrade your plan to keep capturing.'
+        ? err.message
         : 'Failed to start capture: ' + (err?.message ?? err),
     );
+    if (err?.quotaExceeded) refreshUsage();
   }
 }
 
@@ -1304,23 +1315,54 @@ function formatDuration(totalSeconds) {
   return rem ? `${hours}h ${rem}m` : `${hours}h`;
 }
 
+/**
+ * Draw the daily-limit meter. An unlimited plan (null limit) hides the row
+ * entirely rather than drawing an empty bar that implies a cap exists.
+ */
+function renderQuota(quota) {
+  const capped = quota && quota.capturesLimit !== null && quota.capturesLimit !== undefined;
+  els.usageQuotaRow.classList.toggle('hidden', !capped);
+  if (!capped) {
+    els.usageQuotaNote.textContent = 'Resets at midnight US Central.';
+    return;
+  }
+
+  const { capturesUsed: used, capturesLimit: limit } = quota;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  els.usageQuotaLabel.textContent = `${Math.min(used, limit)} of ${limit} loads used`;
+  els.usageQuotaFill.style.width = `${pct}%`;
+  els.usageQuotaFill.classList.toggle('is-warning', used >= limit - 1 && used < limit);
+  els.usageQuotaFill.classList.toggle('is-full', used >= limit);
+  els.usageQuotaNote.textContent =
+    used >= limit
+      ? "You've used today's loads. The limit resets at midnight US Central."
+      : 'Resets at midnight US Central.';
+}
+
 async function refreshUsage() {
   if (!currentUser) return;
 
-  const usage = await fetchUsageSummary();
+  const [usage, quota] = await Promise.all([fetchUsageSummary(), fetchQuotaStatus()]);
   if (!usage) {
     // Leave whatever was last shown rather than flashing zeroes, which would
     // read as "your work wasn't counted".
     return;
   }
 
+  renderQuota(quota);
+
   els.usagePill.classList.remove('hidden');
+  // Against a cap, the useful number is what's left, not what's spent.
   els.usagePillLabel.textContent =
-    usage.loadsToday === 1 ? '1 load today' : `${usage.loadsToday} loads today`;
+    quota && quota.capturesLimit !== null
+      ? `${Math.max(0, quota.capturesLimit - quota.capturesUsed)} of ${quota.capturesLimit} loads left`
+      : usage.loadsToday === 1
+        ? '1 load today'
+        : `${usage.loadsToday} loads today`;
 
   els.usageToday.textContent = usage.loadsToday;
   els.usageMonth.textContent = usage.loadsMonth;
-  els.usageSessions.textContent = usage.captureSessionsMonth;
+  els.usageExtractions.textContent = usage.extractionsMonth;
   els.usageMinutes.textContent = formatDuration(usage.audioSecondsMonth);
 
   els.usagePeriod.textContent = new Date().toLocaleString('en-US', {

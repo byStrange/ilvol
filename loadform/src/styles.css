@@ -1404,3 +1404,28 @@ button {
   border: 1px solid var(--lf-border);
   background: rgba(2, 6, 23, 0.35);
 }
+
+/* ─── Quota meter (Settings → Usage) ───────────────────────────────────── */
+
+.lf-quota-track {
+  height: 0.375rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.15);
+  overflow: hidden;
+}
+
+.lf-quota-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--lf-primary);
+  transition: width 0.25s ease, background-color 0.25s ease;
+}
+
+/* Warn as the cap approaches, so running out isn't a surprise. */
+.lf-quota-fill.is-warning {
+  background: #f59e0b;
+}
+
+.lf-quota-fill.is-full {
+  background: #ef4444;
+}
