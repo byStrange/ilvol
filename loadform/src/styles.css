@@ -1358,3 +1358,49 @@ button {
     justify-content: center;
   }
 }
+
+/* ─── Pending-invite banner ────────────────────────────────────────────── */
+/*
+ * Emerald-tinted rather than the neutral glass used elsewhere: this is the one
+ * card on the capture screen that's asking for a decision, so it should read
+ * as an invitation and not as another panel.
+ */
+
+.lf-invite-card {
+  padding: 1rem 1.125rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  background:
+    linear-gradient(180deg, rgba(16, 185, 129, 0.10), rgba(16, 185, 129, 0.03)),
+    rgba(30, 41, 59, 0.55);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+}
+
+.lf-invite-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.25rem;
+  width: 2.25rem;
+  border-radius: 0.75rem;
+  background: rgba(16, 185, 129, 0.15);
+  box-shadow: inset 0 0 0 1px rgba(16, 185, 129, 0.2);
+  color: #6ee7b7;
+}
+
+.lf-invite-icon svg {
+  height: 1.125rem;
+  width: 1.125rem;
+}
+
+.lf-invite-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.625rem 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(2, 6, 23, 0.35);
+}

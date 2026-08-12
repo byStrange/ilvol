@@ -252,6 +252,11 @@ const els = {
   orgAdminSection: document.getElementById('org-admin-section'),
   orgLeaveBtn: document.getElementById('org-leave-btn'),
   orgConsoleOpenBtn: document.getElementById('org-console-open-btn'),
+  // Pending-invite banner (capture screen)
+  inviteBanner: document.getElementById('invite-banner'),
+  inviteBannerTitle: document.getElementById('invite-banner-title'),
+  inviteBannerList: document.getElementById('invite-banner-list'),
+  inviteBannerError: document.getElementById('invite-banner-error'),
   // Admin console
   appView: document.getElementById('app'),
   adminView: document.getElementById('admin-view'),
@@ -1315,12 +1320,113 @@ async function refreshOrgContext() {
   if (!currentUser) {
     currentMembership = null;
     currentInvites = [];
-    return;
+  } else {
+    currentMembership = await fetchMyMembership(supabase, currentUser.id);
+    currentInvites = currentMembership ? [] : await fetchMyInvites(supabase, currentUser.email);
   }
-  currentMembership = await fetchMyMembership(supabase, currentUser.id);
-  currentInvites = currentMembership ? [] : await fetchMyInvites(supabase, currentUser.email);
+  // Always repaint, including the signed-out case: clearing the state without
+  // clearing the UI would leave a previous user's invites on screen.
   updateOrgOpenButton();
   updateAdminEntryPoints();
+  renderInviteBanner();
+}
+
+// ─── Pending-invite banner ──────────────────────────────────────────────────
+//
+// currentInvites is only ever populated for a user with no active membership
+// (see refreshOrgContext), so this banner is inherently capture-mode only.
+
+function renderInviteBanner() {
+  if (!els.inviteBanner) return;
+  const invites = currentInvites;
+  els.inviteBanner.classList.toggle('hidden', invites.length === 0);
+  hideInviteBannerError();
+  if (invites.length === 0) {
+    els.inviteBannerList.innerHTML = '';
+    return;
+  }
+
+  els.inviteBannerTitle.textContent =
+    invites.length === 1
+      ? "You've been invited to a team"
+      : `You have ${invites.length} team invitations`;
+
+  els.inviteBannerList.innerHTML = '';
+  for (const invite of invites) {
+    const row = document.createElement('div');
+    row.className = 'lf-invite-row';
+    row.innerHTML = `
+      <span class="flex-1 min-w-0">
+        <span class="block text-sm text-white font-medium truncate">${escapeHtml(invite.organizations?.name || 'Organization')}</span>
+        <span class="block text-xs text-slate-500 mt-0.5">Joining as ${escapeHtml(invite.role)}</span>
+      </span>
+      <span class="flex gap-2 shrink-0">
+        <button type="button" class="lf-btn py-1.5 px-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-xs font-medium" data-invite-action="accept" data-invite-id="${invite.id}">Accept</button>
+        <button type="button" class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium" data-invite-action="decline" data-invite-id="${invite.id}">Decline</button>
+      </span>`;
+    els.inviteBannerList.appendChild(row);
+  }
+}
+
+let inviteNoticeTimer = null;
+
+/** Briefly reuse the banner to confirm a join, then hide it for good. */
+function showInviteJoinedNotice(orgName) {
+  els.inviteBannerTitle.textContent = orgName ? `You've joined ${orgName}` : "You've joined the team";
+  els.inviteBannerList.innerHTML =
+    '<p class="text-xs text-slate-400">Loads you capture from now on appear on the organization\'s dashboard.</p>';
+  els.inviteBanner.classList.remove('hidden');
+  clearTimeout(inviteNoticeTimer);
+  inviteNoticeTimer = setTimeout(() => {
+    // Guard against a sign-out or a new invite arriving inside the delay.
+    if (currentInvites.length === 0) els.inviteBanner.classList.add('hidden');
+  }, 6000);
+}
+
+function showInviteBannerError(message) {
+  els.inviteBannerError.textContent = message;
+  els.inviteBannerError.classList.remove('hidden');
+}
+
+function hideInviteBannerError() {
+  els.inviteBannerError.classList.add('hidden');
+}
+
+async function handleInviteBannerClick(e) {
+  const btn = e.target.closest('[data-invite-action]');
+  if (!btn) return;
+  hideInviteBannerError();
+  const inviteId = btn.dataset.inviteId;
+
+  if (btn.dataset.inviteAction === 'accept') {
+    // Read the org name before accepting — refreshOrgContext clears the invite
+    // list this row was rendered from.
+    const orgName = currentInvites.find((i) => i.id === inviteId)?.organizations?.name;
+    const { ok, error } = await acceptInvite(supabase, inviteId);
+    if (!ok) {
+      showInviteBannerError(error || 'Could not accept the invitation');
+      return;
+    }
+    await refreshOrgContext();
+    // Accepting an *admin* invite makes the console their home screen, so send
+    // them straight there rather than leaving them on capture wondering where
+    // the team tools are.
+    if (isOrgAdmin()) {
+      setAppMode('admin');
+      return;
+    }
+    // A dispatcher stays on capture, where the banner has just hidden itself.
+    // Confirm the join rather than letting it vanish silently.
+    showInviteJoinedNotice(orgName);
+    return;
+  }
+
+  const { ok, error } = await declineInvite(supabase, inviteId);
+  if (!ok) {
+    showInviteBannerError(error || 'Could not decline the invitation');
+    return;
+  }
+  await refreshOrgContext();
 }
 
 /** Is the signed-in user an owner/admin of an org? Gates every admin surface. */
@@ -1901,6 +2007,7 @@ async function handleLogout() {
   adminRecentLoads = [];
   adminActivityFilter = 'all';
   renderLoadsList();
+  renderInviteBanner(); // clear a previous user's invites off the screen
   hideSettingsModal();
   hideOrgModal();
   // Back to capture *after* clearing currentMembership, so the next sign-in
@@ -1965,6 +2072,7 @@ window.addEventListener('DOMContentLoaded', () => {
   });
   els.orgCreateForm.addEventListener('submit', handleOrgCreateSubmit);
   els.orgInvitesList.addEventListener('click', handleOrgModalClick);
+  els.inviteBannerList.addEventListener('click', handleInviteBannerClick);
   els.orgLeaveBtn.addEventListener('click', handleOrgLeave);
   els.orgConsoleOpenBtn.addEventListener('click', () => setAppMode('admin', { persist: true }));
   els.orgModal.addEventListener('click', (e) => {
