@@ -32,14 +32,26 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 /**
  * Turn an Edge Function failure into something worth showing a user.
- * A 402 is the quota wall once billing lands, so it gets its own flag.
+ * A 402 is the quota wall, so it gets its own flag.
+ *
+ * Async because the useful text is in the *response body*, not in the error:
+ * on a non-2xx, functions.invoke resolves with data = null and a
+ * FunctionsHttpError whose `message` is only ever the generic "Edge Function
+ * returned a non-2xx status code". The body — where our own error string and
+ * quota details live — hangs off error.context as an unread Response.
  */
-function edgeError(error, data) {
+async function edgeError(error, data) {
   const status = error?.context?.status;
-  const message = data?.error || error?.message || 'Request failed';
-  const err = new Error(message);
+
+  let body = data;
+  if (!body?.error && typeof error?.context?.json === 'function') {
+    body = await error.context.json().catch(() => null);
+  }
+
+  const err = new Error(body?.error || error?.message || 'Request failed');
   err.status = status;
   err.quotaExceeded = status === 402;
+  err.quota = body?.quota ?? null;
   return err;
 }
 
@@ -53,8 +65,13 @@ export async function getDeepgramToken(source = null) {
   const { data, error } = await supabase.functions.invoke('deepgram-token', {
     body: { source },
   });
-  if (error || !data?.access_token) throw edgeError(error, data);
-  return { token: data.access_token, captureId: data.capture_id };
+  if (error || !data?.access_token) throw await edgeError(error, data);
+  return {
+    token: data.access_token,
+    captureId: data.capture_id,
+    capturesRemaining: data.captures_remaining ?? null,
+    capturesLimit: data.captures_limit ?? null,
+  };
 }
 
 /**
@@ -66,7 +83,7 @@ export async function extractLoad(transcript, captureId = null) {
   const { data, error } = await supabase.functions.invoke('extract', {
     body: { transcript, capture_id: captureId },
   });
-  if (error || !data?.data) throw edgeError(error, data);
+  if (error || !data?.data) throw await edgeError(error, data);
   return data;
 }
 
@@ -89,13 +106,85 @@ export async function fetchUsageSummary() {
   // Postgres set-returning functions come back as an array of rows.
   const row = Array.isArray(data) ? data[0] : data;
   if (!row) return null;
+  // "Loads" are capture sessions, matching what the quota counts. Extractions
+  // are a separate, much larger number (auto-extract re-runs during a call) and
+  // are cost telemetry rather than anything to show as a load count.
   return {
-    loadsToday: row.loads_today ?? 0,
-    loadsMonth: row.loads_month ?? 0,
-    captureSessionsMonth: row.capture_sessions_month ?? 0,
+    loadsToday: row.captures_today ?? 0,
+    loadsMonth: row.captures_month ?? 0,
+    extractionsToday: row.extractions_today ?? 0,
+    extractionsMonth: row.extractions_month ?? 0,
     audioSecondsMonth: Number(row.audio_seconds_month ?? 0),
     estCostUsdMonth: Number(row.est_cost_usd_month ?? 0),
   };
+}
+
+/**
+ * Read the caller's plan limits and today's usage against them.
+ *
+ * Same tolerance as fetchUsageSummary: returns null on failure so the UI leaves
+ * the counter blank instead of inventing a limit. The server is the authority —
+ * this is only for display, and the gate lives in the Edge Functions.
+ */
+export async function fetchQuotaStatus() {
+  const { data, error } = await supabase.rpc('quota_status');
+  if (error) {
+    console.warn('quota_status failed:', error.message);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+  return {
+    plan: row.plan ?? 'free',
+    capturesUsed: row.captures_used ?? 0,
+    capturesLimit: row.captures_limit ?? null,
+    extractionsUsed: row.extractions_used ?? 0,
+    extractionsLimit: row.extractions_limit ?? null,
+  };
+}
+
+/**
+ * Create a login for a dispatcher, as their org owner/admin.
+ *
+ * Returns the password exactly once — it is never stored anywhere the app can
+ * read it back, so the only copy is the one shown to the owner. If `password` is
+ * omitted the server generates one.
+ *
+ * `outcome` says what actually happened: 'created' for a new login (credentials
+ * included), or 'invited' when that address already had a LoadForm account and
+ * could therefore only be asked to join.
+ */
+export async function createTeamMember({ email, password = null, role = 'dispatcher' }) {
+  const { data, error } = await supabase.functions.invoke('member-accounts', {
+    body: { action: 'create', email, password, role },
+  });
+  if (error || !data?.outcome) throw await edgeError(error, data);
+  return data;
+}
+
+/**
+ * Set a new password on an account the org created, for a dispatcher who forgot
+ * theirs. With no email provider there is no self-serve reset, so this is the
+ * only way back in — and it only works on logins the org provisioned itself.
+ */
+export async function resetMemberPassword({ memberId, password = null }) {
+  const { data, error } = await supabase.functions.invoke('member-accounts', {
+    body: { action: 'reset_password', member_id: memberId, password },
+  });
+  if (error || !data?.password) throw await edgeError(error, data);
+  return data;
+}
+
+/**
+ * Change the signed-in user's own password.
+ *
+ * The dispatcher-facing half of provisioned accounts: an owner hands over a
+ * generated password, and this is how it stops being the owner's to know.
+ */
+export async function changeOwnPassword(password) {
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
 }
 
 /**

@@ -24,6 +24,10 @@ import {
   extractLoad,
   reportCaptureEnded,
   fetchUsageSummary,
+  fetchQuotaStatus,
+  createTeamMember,
+  resetMemberPassword,
+  changeOwnPassword,
 } from './api.js';
 import {
   saveLoad,
@@ -42,10 +46,11 @@ import {
   declineInvite,
   leaveOrganization,
   fetchOrgMembers,
-  inviteMember,
   removeMember,
   updateMemberRole,
   fetchOrgLoads,
+  fetchOrgRecentLoads,
+  updateOrganizationName,
   aggregateDispatcherStats,
 } from './organizations.js';
 
@@ -170,6 +175,20 @@ let currentMembership = null; // { id, org_id, role, organizations: {...} } | nu
 let currentInvites = []; // pending invites addressed to currentUser's email
 let orgRoster = []; // cached roster, populated when the org panel is open as owner/admin
 
+// ─── App mode ───────────────────────────────────────────────────────────────
+// 'capture' is the dispatcher-facing voice UI (#app); 'admin' is the org
+// console (#admin-view). Exactly one is mounted at a time. Org admins mostly
+// run the team rather than capture loads themselves, so they land in 'admin'
+// unless they last chose otherwise.
+let appMode = 'capture';
+let adminSection = 'overview'; // overview | team | activity | settings
+let adminLoads = []; // aggregate rows (user_id/status/created_at) for the org
+let adminRecentLoads = []; // detailed recent tail, for the activity feed
+let adminActivityFilter = 'all'; // 'all' | a dispatcher user_id
+let adminCreateInFlight = false; // guards against a double-submit minting two accounts
+let adminCredentials = null; // { email, password } — the only copy, held for the copy button
+const MODE_STORAGE_KEY = 'loadform.appMode';
+
 // ─── DOM Elements ─────────────────────────────────────────────────────────
 
 const els = {
@@ -218,18 +237,27 @@ const els = {
   authToggleText: document.getElementById('auth-toggle-text'),
   authError: document.getElementById('auth-error'),
   settingsBtn: document.getElementById('settings-btn'),
-  widgetBtn: document.getElementById('widget-btn'),
   settingsModal: document.getElementById('settings-modal'),
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
   logoutBtn: document.getElementById('logout-btn'),
+  // Change own password (settings) — the other half of provisioned accounts:
+  // whoever was handed a password needs somewhere to replace it.
+  passwordForm: document.getElementById('password-form'),
+  passwordNew: document.getElementById('password-new'),
+  passwordConfirm: document.getElementById('password-confirm'),
+  passwordMessage: document.getElementById('password-message'),
   // Usage display
   usagePill: document.getElementById('usage-pill'),
   usagePillLabel: document.getElementById('usage-pill-label'),
   usagePeriod: document.getElementById('usage-period'),
   usageToday: document.getElementById('usage-today'),
   usageMonth: document.getElementById('usage-month'),
-  usageSessions: document.getElementById('usage-sessions'),
+  usageExtractions: document.getElementById('usage-extractions'),
+  usageQuotaRow: document.getElementById('usage-quota-row'),
+  usageQuotaLabel: document.getElementById('usage-quota-label'),
+  usageQuotaFill: document.getElementById('usage-quota-fill'),
+  usageQuotaNote: document.getElementById('usage-quota-note'),
   usageMinutes: document.getElementById('usage-minutes'),
   // Organization elements
   orgOpenBtn: document.getElementById('org-open-btn'),
@@ -246,19 +274,60 @@ const els = {
   orgMemberName: document.getElementById('org-member-name'),
   orgMemberRole: document.getElementById('org-member-role'),
   orgAdminSection: document.getElementById('org-admin-section'),
-  orgInviteForm: document.getElementById('org-invite-form'),
-  orgInviteEmail: document.getElementById('org-invite-email'),
-  orgInviteRole: document.getElementById('org-invite-role'),
-  orgRosterList: document.getElementById('org-roster-list'),
   orgLeaveBtn: document.getElementById('org-leave-btn'),
-  // Organization dashboard elements
-  orgDashboardOpenBtn: document.getElementById('org-dashboard-open-btn'),
-  orgDashboardModal: document.getElementById('org-dashboard-modal'),
-  orgDashboardCloseBtn: document.getElementById('org-dashboard-close-btn'),
-  orgDashboardOrgName: document.getElementById('org-dashboard-org-name'),
-  orgDashboardSummary: document.getElementById('org-dashboard-summary'),
-  orgDashboardTableBody: document.getElementById('org-dashboard-table-body'),
-  orgDashboardEmpty: document.getElementById('org-dashboard-empty'),
+  orgConsoleOpenBtn: document.getElementById('org-console-open-btn'),
+  // Pending-invite banner (capture screen)
+  inviteBanner: document.getElementById('invite-banner'),
+  inviteBannerTitle: document.getElementById('invite-banner-title'),
+  inviteBannerList: document.getElementById('invite-banner-list'),
+  inviteBannerError: document.getElementById('invite-banner-error'),
+  // Admin console
+  appView: document.getElementById('app'),
+  adminView: document.getElementById('admin-view'),
+  adminModeBtn: document.getElementById('admin-mode-btn'),
+  adminCaptureBtn: document.getElementById('admin-capture-btn'),
+  adminOrgName: document.getElementById('admin-org-name'),
+  adminOrgRole: document.getElementById('admin-org-role'),
+  adminUserEmail: document.getElementById('admin-user-email'),
+  adminSectionTitle: document.getElementById('admin-section-title'),
+  adminSectionSub: document.getElementById('admin-section-sub'),
+  adminRefreshBtn: document.getElementById('admin-refresh-btn'),
+  adminError: document.getElementById('admin-error'),
+  adminTeamCount: document.getElementById('admin-team-count'),
+  adminWinMinimize: document.getElementById('admin-win-minimize'),
+  adminWinMaximize: document.getElementById('admin-win-maximize'),
+  adminWinClose: document.getElementById('admin-win-close'),
+  // Admin console — overview
+  adminKpis: document.getElementById('admin-kpis'),
+  adminStatsBody: document.getElementById('admin-stats-body'),
+  adminStatsEmpty: document.getElementById('admin-stats-empty'),
+  // Admin console — team
+  adminCreateMemberForm: document.getElementById('admin-create-member-form'),
+  adminCreateEmail: document.getElementById('admin-create-email'),
+  adminCreateRole: document.getElementById('admin-create-role'),
+  adminCreatePassword: document.getElementById('admin-create-password'),
+  adminCreateSubmit: document.getElementById('admin-create-submit'),
+  adminCredentials: document.getElementById('admin-credentials'),
+  adminCredentialsTitle: document.getElementById('admin-credentials-title'),
+  adminCredentialsEmail: document.getElementById('admin-credentials-email'),
+  adminCredentialsPassword: document.getElementById('admin-credentials-password'),
+  adminCredentialsPasswordRow: document.getElementById('admin-credentials-password-row'),
+  adminCredentialsNote: document.getElementById('admin-credentials-note'),
+  adminCredentialsCopy: document.getElementById('admin-credentials-copy'),
+  adminCredentialsDismiss: document.getElementById('admin-credentials-dismiss'),
+  adminRoster: document.getElementById('admin-roster'),
+  adminSeatSummary: document.getElementById('admin-seat-summary'),
+  // Admin console — activity
+  adminActivityList: document.getElementById('admin-activity-list'),
+  adminActivityEmpty: document.getElementById('admin-activity-empty'),
+  adminActivityFilter: document.getElementById('admin-activity-filter'),
+  // Admin console — settings
+  adminOrgNameForm: document.getElementById('admin-org-name-form'),
+  adminOrgNameInput: document.getElementById('admin-org-name-input'),
+  adminOrgNameSaved: document.getElementById('admin-org-name-saved'),
+  adminBillingPreview: document.getElementById('admin-billing-preview'),
+  adminMembershipNote: document.getElementById('admin-membership-note'),
+  adminLeaveBtn: document.getElementById('admin-leave-btn'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -564,10 +633,14 @@ async function startCapture() {
     // server-side gate where quota will be enforced, so a failure here is a
     // legitimate reason not to start.
     const mixSystemAudio = els.mixSystemCheckbox.checked;
-    const { token, captureId } = await getDeepgramToken(
-      mixSystemAudio ? 'mixed' : 'mic',
-    );
+    const { token, captureId, capturesRemaining, capturesLimit } =
+      await getDeepgramToken(mixSystemAudio ? 'mixed' : 'mic');
     currentCaptureId = captureId;
+    // The grant response already carries the post-increment count, so the
+    // counter can drop immediately without another round trip mid-capture.
+    if (capturesLimit !== null && capturesRemaining !== null) {
+      els.usagePillLabel.textContent = `${capturesRemaining} of ${capturesLimit} loads left`;
+    }
     captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
       deviceId: selectedDeviceId,
@@ -576,11 +649,14 @@ async function startCapture() {
     });
   } catch (err) {
     console.error('Failed to start capture:', err);
+    // The server's message names the actual limit and when it resets, so
+    // prefer it over anything hardcoded here.
     alert(
       err?.quotaExceeded
-        ? 'You have reached your load limit. Upgrade your plan to keep capturing.'
+        ? err.message
         : 'Failed to start capture: ' + (err?.message ?? err),
     );
+    if (err?.quotaExceeded) refreshUsage();
   }
 }
 
@@ -1210,6 +1286,7 @@ function initAuth() {
         hideAuthModal();
         refreshLoadsList();
         await refreshOrgContext();
+        setAppMode(initialModeFor());
         refreshUsage();
       } else {
         // Token invalid/expired
@@ -1236,11 +1313,52 @@ function showSettingsModal() {
   if (!currentUser) return;
   els.settingsUserEmail.textContent = currentUser.email || 'Unknown';
   els.settingsModal.classList.remove('hidden');
+  // A password half-typed on a previous visit shouldn't still be sitting there.
+  els.passwordForm.reset();
+  els.passwordMessage.classList.add('hidden');
   refreshUsage();
 }
 
 function hideSettingsModal() {
   els.settingsModal.classList.add('hidden');
+}
+
+/** Matches supabase/config.toml's minimum_password_length, so we reject a short
+ * password here rather than letting GoTrue do it a round-trip later. */
+const MIN_PASSWORD_LENGTH = 6;
+
+/**
+ * Replace the signed-in user's own password. The dispatcher-facing half of
+ * provisioned accounts: this is how a handed-over password stops being the
+ * owner's to know.
+ */
+async function handlePasswordSubmit(e) {
+  e.preventDefault();
+  const password = els.passwordNew.value;
+  const confirm = els.passwordConfirm.value;
+
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    showPasswordMessage(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`, false);
+    return;
+  }
+  if (password !== confirm) {
+    showPasswordMessage("Those two passwords don't match", false);
+    return;
+  }
+
+  const { ok, error } = await changeOwnPassword(password);
+  if (!ok) {
+    showPasswordMessage(error || 'Could not update your password', false);
+    return;
+  }
+  els.passwordForm.reset();
+  showPasswordMessage('Password updated.', true);
+}
+
+function showPasswordMessage(message, ok) {
+  els.passwordMessage.textContent = message;
+  els.passwordMessage.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+  els.passwordMessage.classList.add(ok ? 'text-emerald-400' : 'text-red-400');
 }
 
 // ─── Usage Display ──────────────────────────────────────────────────────────
@@ -1258,23 +1376,54 @@ function formatDuration(totalSeconds) {
   return rem ? `${hours}h ${rem}m` : `${hours}h`;
 }
 
+/**
+ * Draw the daily-limit meter. An unlimited plan (null limit) hides the row
+ * entirely rather than drawing an empty bar that implies a cap exists.
+ */
+function renderQuota(quota) {
+  const capped = quota && quota.capturesLimit !== null && quota.capturesLimit !== undefined;
+  els.usageQuotaRow.classList.toggle('hidden', !capped);
+  if (!capped) {
+    els.usageQuotaNote.textContent = 'Resets at midnight US Central.';
+    return;
+  }
+
+  const { capturesUsed: used, capturesLimit: limit } = quota;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  els.usageQuotaLabel.textContent = `${Math.min(used, limit)} of ${limit} loads used`;
+  els.usageQuotaFill.style.width = `${pct}%`;
+  els.usageQuotaFill.classList.toggle('is-warning', used >= limit - 1 && used < limit);
+  els.usageQuotaFill.classList.toggle('is-full', used >= limit);
+  els.usageQuotaNote.textContent =
+    used >= limit
+      ? "You've used today's loads. The limit resets at midnight US Central."
+      : 'Resets at midnight US Central.';
+}
+
 async function refreshUsage() {
   if (!currentUser) return;
 
-  const usage = await fetchUsageSummary();
+  const [usage, quota] = await Promise.all([fetchUsageSummary(), fetchQuotaStatus()]);
   if (!usage) {
     // Leave whatever was last shown rather than flashing zeroes, which would
     // read as "your work wasn't counted".
     return;
   }
 
+  renderQuota(quota);
+
   els.usagePill.classList.remove('hidden');
+  // Against a cap, the useful number is what's left, not what's spent.
   els.usagePillLabel.textContent =
-    usage.loadsToday === 1 ? '1 load today' : `${usage.loadsToday} loads today`;
+    quota && quota.capturesLimit !== null
+      ? `${Math.max(0, quota.capturesLimit - quota.capturesUsed)} of ${quota.capturesLimit} loads left`
+      : usage.loadsToday === 1
+        ? '1 load today'
+        : `${usage.loadsToday} loads today`;
 
   els.usageToday.textContent = usage.loadsToday;
   els.usageMonth.textContent = usage.loadsMonth;
-  els.usageSessions.textContent = usage.captureSessionsMonth;
+  els.usageExtractions.textContent = usage.extractionsMonth;
   els.usageMinutes.textContent = formatDuration(usage.audioSecondsMonth);
 
   els.usagePeriod.textContent = new Date().toLocaleString('en-US', {
@@ -1345,6 +1494,7 @@ async function handleAuthSubmit(e) {
       currentUser = session.user;
       refreshLoadsList();
       await refreshOrgContext();
+      setAppMode(initialModeFor());
       refreshUsage();
       hideAuthModal();
       els.authForm.reset();
@@ -1369,11 +1519,118 @@ async function refreshOrgContext() {
   if (!currentUser) {
     currentMembership = null;
     currentInvites = [];
+  } else {
+    currentMembership = await fetchMyMembership(supabase, currentUser.id);
+    currentInvites = currentMembership ? [] : await fetchMyInvites(supabase, currentUser.email);
+  }
+  // Always repaint, including the signed-out case: clearing the state without
+  // clearing the UI would leave a previous user's invites on screen.
+  updateOrgOpenButton();
+  updateAdminEntryPoints();
+  renderInviteBanner();
+}
+
+// ─── Pending-invite banner ──────────────────────────────────────────────────
+//
+// currentInvites is only ever populated for a user with no active membership
+// (see refreshOrgContext), so this banner is inherently capture-mode only.
+
+function renderInviteBanner() {
+  if (!els.inviteBanner) return;
+  const invites = currentInvites;
+  els.inviteBanner.classList.toggle('hidden', invites.length === 0);
+  hideInviteBannerError();
+  if (invites.length === 0) {
+    els.inviteBannerList.innerHTML = '';
     return;
   }
-  currentMembership = await fetchMyMembership(supabase, currentUser.id);
-  currentInvites = currentMembership ? [] : await fetchMyInvites(supabase, currentUser.email);
-  updateOrgOpenButton();
+
+  els.inviteBannerTitle.textContent =
+    invites.length === 1
+      ? "You've been invited to a team"
+      : `You have ${invites.length} team invitations`;
+
+  els.inviteBannerList.innerHTML = '';
+  for (const invite of invites) {
+    const row = document.createElement('div');
+    row.className = 'lf-invite-row';
+    row.innerHTML = `
+      <span class="flex-1 min-w-0">
+        <span class="block text-sm text-white font-medium truncate">${escapeHtml(invite.organizations?.name || 'Organization')}</span>
+        <span class="block text-xs text-slate-500 mt-0.5">Joining as ${escapeHtml(invite.role)}</span>
+      </span>
+      <span class="flex gap-2 shrink-0">
+        <button type="button" class="lf-btn py-1.5 px-3 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-xs font-medium" data-invite-action="accept" data-invite-id="${invite.id}">Accept</button>
+        <button type="button" class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium" data-invite-action="decline" data-invite-id="${invite.id}">Decline</button>
+      </span>`;
+    els.inviteBannerList.appendChild(row);
+  }
+}
+
+let inviteNoticeTimer = null;
+
+/** Briefly reuse the banner to confirm a join, then hide it for good. */
+function showInviteJoinedNotice(orgName) {
+  els.inviteBannerTitle.textContent = orgName ? `You've joined ${orgName}` : "You've joined the team";
+  els.inviteBannerList.innerHTML =
+    '<p class="text-xs text-slate-400">Loads you capture from now on appear on the organization\'s dashboard.</p>';
+  els.inviteBanner.classList.remove('hidden');
+  clearTimeout(inviteNoticeTimer);
+  inviteNoticeTimer = setTimeout(() => {
+    // Guard against a sign-out or a new invite arriving inside the delay.
+    if (currentInvites.length === 0) els.inviteBanner.classList.add('hidden');
+  }, 6000);
+}
+
+function showInviteBannerError(message) {
+  els.inviteBannerError.textContent = message;
+  els.inviteBannerError.classList.remove('hidden');
+}
+
+function hideInviteBannerError() {
+  els.inviteBannerError.classList.add('hidden');
+}
+
+async function handleInviteBannerClick(e) {
+  const btn = e.target.closest('[data-invite-action]');
+  if (!btn) return;
+  hideInviteBannerError();
+  const inviteId = btn.dataset.inviteId;
+
+  if (btn.dataset.inviteAction === 'accept') {
+    // Read the org name before accepting — refreshOrgContext clears the invite
+    // list this row was rendered from.
+    const orgName = currentInvites.find((i) => i.id === inviteId)?.organizations?.name;
+    const { ok, error } = await acceptInvite(supabase, inviteId);
+    if (!ok) {
+      showInviteBannerError(error || 'Could not accept the invitation');
+      return;
+    }
+    await refreshOrgContext();
+    // Accepting an *admin* invite makes the console their home screen, so send
+    // them straight there rather than leaving them on capture wondering where
+    // the team tools are.
+    if (isOrgAdmin()) {
+      setAppMode('admin');
+      return;
+    }
+    // A dispatcher stays on capture, where the banner has just hidden itself.
+    // Confirm the join rather than letting it vanish silently.
+    showInviteJoinedNotice(orgName);
+    return;
+  }
+
+  const { ok, error } = await declineInvite(supabase, inviteId);
+  if (!ok) {
+    showInviteBannerError(error || 'Could not decline the invitation');
+    return;
+  }
+  await refreshOrgContext();
+}
+
+/** Is the signed-in user an owner/admin of an org? Gates every admin surface. */
+function isOrgAdmin() {
+  return !!currentMembership && ['owner', 'admin'].includes(currentMembership.role);
 }
 
 function updateOrgOpenButton() {
@@ -1386,6 +1643,18 @@ function updateOrgOpenButton() {
   } else {
     els.orgOpenBtnSub.textContent = 'Not part of an organization';
   }
+}
+
+/** Show/hide the admin affordances, and bail out of admin mode if the user
+ * no longer qualifies (demoted themselves, left, or signed out). */
+function updateAdminEntryPoints() {
+  const admin = isOrgAdmin();
+  if (els.adminModeBtn) {
+    els.adminModeBtn.classList.toggle('hidden', !admin);
+    els.adminModeBtn.classList.toggle('flex', admin);
+  }
+  if (els.orgAdminSection) els.orgAdminSection.classList.toggle('hidden', !admin);
+  if (!admin && appMode === 'admin') setAppMode('capture');
 }
 
 function showOrgError(message) {
@@ -1403,11 +1672,8 @@ async function showOrgModal() {
   els.orgModal.classList.remove('hidden');
   els.orgModal.classList.add('flex');
   await refreshOrgContext();
-  if (currentMembership && ['owner', 'admin'].includes(currentMembership.role)) {
-    orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
-  } else {
-    orgRoster = [];
-  }
+  // No roster fetch here any more: the roster belongs to the admin console,
+  // which loads it itself. This modal only shows membership + invites.
   renderOrgModal();
 }
 
@@ -1442,33 +1708,11 @@ function renderOrgModal() {
     els.orgMemberName.textContent = org?.name || 'Organization';
     els.orgMemberRole.textContent = `Role: ${currentMembership.role}`;
 
-    const isAdmin = ['owner', 'admin'].includes(currentMembership.role);
-    els.orgAdminSection.classList.toggle('hidden', !isAdmin);
+    // Admin-only surfaces live in the console now; this modal just offers the
+    // way in (updateAdminEntryPoints owns that row's visibility).
+    updateAdminEntryPoints();
     // Owners can't leave their own org in v1 (no ownership transfer yet).
     els.orgLeaveBtn.classList.toggle('hidden', currentMembership.role === 'owner');
-
-    if (isAdmin) {
-      els.orgRosterList.innerHTML = '';
-      for (const member of orgRoster) {
-        const label = member.status === 'invited' ? `${member.invited_email} (pending)` : member.invited_email;
-        const canManage = member.role !== 'owner';
-        const roleControl = canManage
-          ? `<select class="lf-select w-auto text-xs py-1" data-org-role-select data-member-id="${member.id}">
-               <option value="dispatcher"${member.role === 'dispatcher' ? ' selected' : ''}>Dispatcher</option>
-               <option value="admin"${member.role === 'admin' ? ' selected' : ''}>Admin</option>
-             </select>`
-          : `<span class="text-slate-500 text-xs">owner</span>`;
-        const row = document.createElement('div');
-        row.className = 'flex items-center justify-between gap-2 p-3 rounded-xl bg-slate-950/40 border border-white/5';
-        row.innerHTML = `
-          <span class="text-sm text-slate-300 truncate">${escapeHtml(label)}</span>
-          <span class="flex items-center gap-2 shrink-0">
-            ${roleControl}
-            ${canManage ? `<button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium" data-org-action="remove" data-member-id="${member.id}">Remove</button>` : ''}
-          </span>`;
-        els.orgRosterList.appendChild(row);
-      }
-    }
   }
 }
 
@@ -1486,23 +1730,8 @@ async function handleOrgCreateSubmit(e) {
   await showOrgModal();
 }
 
-async function handleOrgInviteSubmit(e) {
-  e.preventDefault();
-  hideOrgError();
-  if (!currentMembership) return;
-  const email = els.orgInviteEmail.value.trim();
-  const role = els.orgInviteRole.value;
-  if (!email) return;
-  const { ok, error } = await inviteMember(supabase, currentMembership.org_id, email, role, currentUser.id);
-  if (!ok) {
-    showOrgError(error || 'Could not send invite');
-    return;
-  }
-  els.orgInviteForm.reset();
-  orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
-  renderOrgModal();
-}
-
+// Invite accept/decline. Roster management (invite, role change, remove) is
+// an admin action and lives in the console — see handleAdminRosterClick.
 async function handleOrgModalClick(e) {
   const btn = e.target.closest('[data-org-action]');
   if (!btn) return;
@@ -1519,19 +1748,6 @@ async function handleOrgModalClick(e) {
   } else if (action === 'decline') {
     await declineInvite(supabase, btn.dataset.inviteId);
     await showOrgModal();
-  } else if (action === 'remove') {
-    const memberId = btn.dataset.memberId;
-    const member = orgRoster.find((m) => m.id === memberId);
-    await removeMember(supabase, memberId, member?.status);
-    if (memberId === currentMembership?.id) {
-      // Removed themselves: currentMembership and any admin-only UI it
-      // drives (invite form, roster, dashboard access) need to be
-      // re-derived from scratch, not just the roster list refreshed.
-      await showOrgModal();
-    } else {
-      orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
-      renderOrgModal();
-    }
   }
 }
 
@@ -1545,77 +1761,457 @@ async function handleOrgLeave() {
   await showOrgModal();
 }
 
-async function handleOrgRosterRoleChange(e) {
-  const select = e.target.closest('[data-org-role-select]');
-  if (!select) return;
-  hideOrgError();
-  const memberId = select.dataset.memberId;
-  const { ok, error } = await updateMemberRole(supabase, memberId, select.value);
-  if (!ok) {
-    showOrgError(error || 'Could not update role');
+// ─── App mode switching ─────────────────────────────────────────────────────
+
+/**
+ * Mount either the capture UI or the admin console. Switching *into* admin
+ * loads its data; switching out leaves the cached rows alone so coming back
+ * is instant (the refresh button and every mutation re-fetch anyway).
+ *
+ * Only a deliberate switch is remembered (`persist`). Forced drops to capture
+ * — sign-out, losing admin rights — must not overwrite the stored preference,
+ * or an admin who signs out once would stop landing in the console.
+ */
+function setAppMode(mode, { persist = false } = {}) {
+  const target = mode === 'admin' && isOrgAdmin() ? 'admin' : 'capture';
+  appMode = target;
+  if (persist) {
+    try {
+      localStorage.setItem(MODE_STORAGE_KEY, target);
+    } catch {
+      // Private mode / storage disabled: the choice just won't survive a restart.
+    }
   }
-  if (memberId === currentMembership?.id) {
-    // Demoted themselves out of admin: re-derive currentMembership so the
-    // admin-only panels disappear immediately instead of showing stale
-    // (pre-demotion) permissions until the next full refresh.
-    await showOrgModal();
-  } else {
-    orgRoster = await fetchOrgMembers(supabase, currentMembership.org_id);
-    renderOrgModal();
+  els.appView.classList.toggle('hidden', target === 'admin');
+  els.adminView.classList.toggle('hidden', target !== 'admin');
+  if (target === 'admin') {
+    hideSettingsModal();
+    hideOrgModal();
+    setAdminSection(adminSection); // re-assert nav/panel pairing on re-entry
+    refreshAdminConsole();
   }
 }
 
-// ─── Organization dashboard ─────────────────────────────────────────────────
+/** Where a signed-in user should land. Admins default into the console — they
+ * run the team rather than capture loads — but a remembered choice wins. */
+function initialModeFor() {
+  if (!isOrgAdmin()) return 'capture';
+  let stored = null;
+  try {
+    stored = localStorage.getItem(MODE_STORAGE_KEY);
+  } catch {
+    stored = null;
+  }
+  return stored === 'capture' ? 'capture' : 'admin';
+}
 
-function dashboardTile(label, value) {
-  return `<div class="p-3 rounded-xl bg-slate-950/40 border border-white/5 text-center">
-    <p class="text-xl font-bold text-white tabular-nums">${value}</p>
-    <p class="text-xs text-slate-500 mt-0.5">${escapeHtml(label)}</p>
+// ─── Admin console ──────────────────────────────────────────────────────────
+
+const ADMIN_SECTIONS = {
+  overview: { title: 'Overview', sub: 'How your dispatchers are performing.' },
+  team: { title: 'Team', sub: 'Add dispatchers and manage who can do what.' },
+  activity: { title: 'Activity', sub: 'Every load your dispatchers have captured.' },
+  settings: { title: 'Settings', sub: 'Organization name, seats, and billing.' },
+};
+
+function showAdminError(message) {
+  els.adminError.textContent = message;
+  els.adminError.classList.remove('hidden');
+}
+
+function hideAdminError() {
+  els.adminError.classList.add('hidden');
+}
+
+function setAdminSection(section) {
+  if (!ADMIN_SECTIONS[section]) return;
+  adminSection = section;
+  hideAdminError();
+  // Credentials are shown once, in context. Navigating away is the admin saying
+  // they're done with them.
+  hideAdminCredentials();
+  for (const btn of document.querySelectorAll('[data-admin-section]')) {
+    btn.classList.toggle('is-active', btn.dataset.adminSection === section);
+  }
+  for (const key of Object.keys(ADMIN_SECTIONS)) {
+    const panel = document.getElementById(`admin-panel-${key}`);
+    if (panel) panel.classList.toggle('hidden', key !== section);
+  }
+  els.adminSectionTitle.textContent = ADMIN_SECTIONS[section].title;
+  els.adminSectionSub.textContent = ADMIN_SECTIONS[section].sub;
+}
+
+/** Re-fetch everything the console shows, then repaint all four panels. */
+async function refreshAdminConsole() {
+  if (!isOrgAdmin()) return;
+  hideAdminError();
+  const orgId = currentMembership.org_id;
+  const [loads, members, recent] = await Promise.all([
+    fetchOrgLoads(supabase, orgId),
+    fetchOrgMembers(supabase, orgId),
+    fetchOrgRecentLoads(supabase, orgId),
+  ]);
+  adminLoads = loads;
+  orgRoster = members;
+  adminRecentLoads = recent;
+  renderAdminConsole();
+}
+
+function renderAdminConsole() {
+  if (!currentMembership) return;
+  const org = currentMembership.organizations;
+  els.adminOrgName.textContent = org?.name || 'Organization';
+  els.adminOrgRole.textContent = `Signed in as ${currentMembership.role}`;
+  els.adminUserEmail.textContent = currentUser?.email || '';
+
+  const stats = aggregateDispatcherStats(adminLoads, orgRoster);
+  renderAdminOverview(stats);
+  renderAdminTeam();
+  renderAdminActivity(stats);
+  renderAdminSettings();
+}
+
+function kpiTile(label, value) {
+  return `<div class="lf-kpi">
+    <p class="lf-kpi-value">${escapeHtml(String(value))}</p>
+    <p class="lf-kpi-label">${escapeHtml(label)}</p>
   </div>`;
 }
 
-async function showOrgDashboard() {
-  if (!currentMembership) return;
-  els.orgDashboardOrgName.textContent = currentMembership.organizations?.name || '';
-  els.orgDashboardModal.classList.remove('hidden');
-  els.orgDashboardModal.classList.add('flex');
-
-  const [loads, members] = await Promise.all([
-    fetchOrgLoads(supabase, currentMembership.org_id),
-    fetchOrgMembers(supabase, currentMembership.org_id),
-  ]);
-  renderOrgDashboard(aggregateDispatcherStats(loads, members), loads);
-}
-
-function hideOrgDashboard() {
-  els.orgDashboardModal.classList.add('hidden');
-  els.orgDashboardModal.classList.remove('flex');
-}
-
-function renderOrgDashboard(stats, loads) {
-  const activeDispatcherCount = stats.filter((s) => s.role).length;
+function renderAdminOverview(stats) {
+  const activeMembers = orgRoster.filter((m) => m.status === 'active');
   const last7dTotal = stats.reduce((sum, s) => sum + s.last7d, 0);
+  const completed = stats.reduce((sum, s) => sum + s.completed, 0);
 
-  els.orgDashboardSummary.innerHTML =
-    dashboardTile('Total loads', loads.length) +
-    dashboardTile('Last 7 days', last7dTotal) +
-    dashboardTile('Dispatchers', activeDispatcherCount);
+  els.adminKpis.innerHTML =
+    kpiTile('Loads captured', adminLoads.length) +
+    kpiTile('Last 7 days', last7dTotal) +
+    kpiTile('Completed', completed) +
+    kpiTile('Active dispatchers', activeMembers.length);
 
-  els.orgDashboardEmpty.classList.toggle('hidden', loads.length > 0);
-  els.orgDashboardTableBody.innerHTML = '';
+  els.adminTeamCount.textContent = activeMembers.length || '';
+  els.adminStatsEmpty.classList.toggle('hidden', adminLoads.length > 0);
+  els.adminStatsBody.innerHTML = '';
+
+  // Share bars are relative to the busiest dispatcher, not to the org total —
+  // with a handful of dispatchers, share-of-total bars are all too short to
+  // compare at a glance.
+  const busiest = stats.reduce((max, s) => Math.max(max, s.total), 0);
 
   for (const s of stats) {
+    const pct = busiest > 0 ? Math.round((s.total / busiest) * 100) : 0;
     const row = document.createElement('tr');
     row.className = 'border-b border-white/5 last:border-0';
     row.innerHTML = `
-      <td class="py-2.5 text-slate-200">${escapeHtml(s.email)}${s.role ? '' : ' <span class="text-slate-500 text-xs">(left org)</span>'}</td>
-      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.total}</td>
+      <td class="py-2.5 pr-3 text-slate-200">
+        ${escapeHtml(s.email)}
+        ${s.role ? `<span class="lf-admin-tag ml-1.5${s.role === 'owner' ? ' is-owner' : ''}">${escapeHtml(s.role)}</span>` : '<span class="lf-admin-tag ml-1.5">left org</span>'}
+      </td>
+      <td class="py-2.5 text-right text-white font-medium tabular-nums">${s.total}</td>
       <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.last7d}</td>
       <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.last30d}</td>
       <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.active}</td>
-      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.completed}</td>`;
-    els.orgDashboardTableBody.appendChild(row);
+      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.completed}</td>
+      <td class="py-2.5 pl-3">
+        <div class="lf-share-track"><div class="lf-share-fill" style="width:${pct}%"></div></div>
+      </td>`;
+    els.adminStatsBody.appendChild(row);
   }
+}
+
+function renderAdminTeam() {
+  const active = orgRoster.filter((m) => m.status === 'active').length;
+  const pending = orgRoster.filter((m) => m.status === 'invited').length;
+  els.adminSeatSummary.textContent = pending
+    ? `${active} active · ${pending} pending`
+    : `${active} active`;
+
+  els.adminRoster.innerHTML = '';
+  for (const member of orgRoster) {
+    const isPending = member.status === 'invited';
+    const canManage = member.role !== 'owner';
+    // Only logins this org created can have their password reset from here —
+    // see the provisioned_at comment in the migration.
+    const canResetPassword = canManage && !isPending && !!member.provisioned_at;
+    const roleControl = canManage
+      ? `<select class="lf-select w-auto text-xs py-1" data-admin-role-select data-member-id="${member.id}">
+           <option value="dispatcher"${member.role === 'dispatcher' ? ' selected' : ''}>Dispatcher</option>
+           <option value="admin"${member.role === 'admin' ? ' selected' : ''}>Admin</option>
+         </select>`
+      : '<span class="lf-admin-tag is-owner">owner</span>';
+
+    const row = document.createElement('div');
+    row.className = 'lf-admin-row';
+    row.innerHTML = `
+      <span class="flex-1 min-w-0">
+        <span class="block text-sm text-slate-200 truncate">${escapeHtml(member.invited_email)}</span>
+        <span class="block text-xs text-slate-500 mt-0.5">
+          ${isPending ? 'Invitation sent — not yet accepted' : `Joined ${formatAdminDate(member.accepted_at || member.created_at)}`}
+        </span>
+      </span>
+      ${isPending ? '<span class="lf-admin-tag is-pending shrink-0">pending</span>' : ''}
+      <span class="flex items-center gap-2 shrink-0">
+        ${roleControl}
+        ${canResetPassword ? `<button type="button" class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium" data-admin-action="reset-password" data-member-id="${member.id}">Reset password</button>` : ''}
+        ${canManage ? `<button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium" data-admin-action="remove" data-member-id="${member.id}">${isPending ? 'Revoke' : 'Remove'}</button>` : ''}
+      </span>`;
+    els.adminRoster.appendChild(row);
+  }
+}
+
+function renderAdminActivity(stats) {
+  // Keep the chosen dispatcher selected across repaints where possible; fall
+  // back to "all" if that dispatcher is no longer in the list.
+  const options = ['<option value="all">All dispatchers</option>'];
+  for (const s of stats) {
+    options.push(
+      `<option value="${escapeHtml(s.userId)}"${s.userId === adminActivityFilter ? ' selected' : ''}>${escapeHtml(s.email)}</option>`
+    );
+  }
+  els.adminActivityFilter.innerHTML = options.join('');
+  if (els.adminActivityFilter.value !== adminActivityFilter) {
+    adminActivityFilter = 'all';
+    els.adminActivityFilter.value = 'all';
+  }
+
+  const rows =
+    adminActivityFilter === 'all'
+      ? adminRecentLoads
+      : adminRecentLoads.filter((l) => l.user_id === adminActivityFilter);
+
+  const emailByUser = new Map(stats.map((s) => [s.userId, s.email]));
+  els.adminActivityEmpty.classList.toggle('hidden', rows.length > 0);
+  els.adminActivityList.innerHTML = '';
+
+  for (const load of rows) {
+    const lane = [load.pickup_location, load.delivery_location].filter(Boolean).join(' → ');
+    const meta = [load.equipment_type, load.rate].filter(Boolean).join(' · ');
+    const row = document.createElement('div');
+    row.className = 'lf-admin-row';
+    row.innerHTML = `
+      <span class="flex-1 min-w-0">
+        <span class="block text-sm text-slate-200 truncate">${escapeHtml(load.title || 'Untitled load')}</span>
+        <span class="block text-xs text-slate-500 mt-0.5 truncate">
+          ${escapeHtml(lane || 'No lane captured')}${meta ? ` · ${escapeHtml(meta)}` : ''}
+        </span>
+      </span>
+      <span class="text-xs text-slate-500 shrink-0 hidden sm:block">${escapeHtml(emailByUser.get(load.user_id) || 'Former member')}</span>
+      <span class="lf-admin-tag shrink-0">${escapeHtml(load.status)}</span>
+      <span class="text-xs text-slate-600 shrink-0 tabular-nums">${escapeHtml(formatAdminDate(load.created_at))}</span>`;
+    els.adminActivityList.appendChild(row);
+  }
+}
+
+function renderAdminSettings() {
+  const org = currentMembership.organizations;
+  // Don't clobber what an admin is mid-way through typing.
+  if (document.activeElement !== els.adminOrgNameInput) {
+    els.adminOrgNameInput.value = org?.name || '';
+  }
+
+  const active = orgRoster.filter((m) => m.status === 'active').length;
+  const pending = orgRoster.filter((m) => m.status === 'invited').length;
+  els.adminBillingPreview.innerHTML = `
+    <p><span class="text-white font-medium tabular-nums">${active}</span> billable seat${active === 1 ? '' : 's'} in use</p>
+    ${pending ? `<p class="text-slate-500 mt-1">${pending} invited seat${pending === 1 ? '' : 's'} not yet counted</p>` : ''}`;
+
+  const isOwner = currentMembership.role === 'owner';
+  els.adminMembershipNote.textContent = isOwner
+    ? "You own this organization. Ownership can't be transferred yet, so the owner account can't leave."
+    : `You're an admin of ${org?.name || 'this organization'}.`;
+  els.adminLeaveBtn.classList.toggle('hidden', isOwner);
+}
+
+function formatAdminDate(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Create a dispatcher's login, or fall back to an invite.
+ *
+ * The server decides which of the two happened — an address that already has a
+ * LoadForm account can't have one made for it — so the outcome it reports, not
+ * what was submitted, is what gets shown.
+ */
+async function handleAdminCreateMemberSubmit(e) {
+  e.preventDefault();
+  hideAdminError();
+  hideAdminCredentials();
+  if (!isOrgAdmin() || adminCreateInFlight) return;
+
+  const email = els.adminCreateEmail.value.trim();
+  if (!email) return;
+  const password = els.adminCreatePassword.value.trim();
+
+  setAdminCreateBusy(true);
+  try {
+    const result = await createTeamMember({
+      email,
+      password: password || null,
+      role: els.adminCreateRole.value,
+    });
+    els.adminCreateMemberForm.reset();
+    if (result.outcome === 'created') {
+      showAdminCredentials('Account created', result.email, result.password);
+    } else {
+      // No credentials to hand over on this path: they already have a login of
+      // their own, so all we did was ask them to join.
+      showAdminCredentials(
+        'Invitation sent',
+        result.email,
+        null,
+        'That address already has a LoadForm account, so they were invited instead. ' +
+          'They join once they accept.'
+      );
+    }
+    await refreshAdminConsole();
+  } catch (err) {
+    showAdminError(err.message || 'Could not create the account');
+  } finally {
+    setAdminCreateBusy(false);
+  }
+}
+
+function setAdminCreateBusy(busy) {
+  adminCreateInFlight = busy;
+  els.adminCreateSubmit.disabled = busy;
+  els.adminCreateSubmit.textContent = busy ? 'Creating…' : 'Create account';
+}
+
+/**
+ * Show credentials once. `password` is null on the invite path, where there is
+ * nothing to hand over — the row is dropped rather than shown empty.
+ */
+function showAdminCredentials(title, email, password, note = null) {
+  els.adminCredentialsTitle.textContent = title;
+  els.adminCredentialsEmail.textContent = email;
+  els.adminCredentialsPassword.textContent = password || '';
+  els.adminCredentialsPasswordRow.classList.toggle('hidden', !password);
+  els.adminCredentialsCopy.classList.toggle('hidden', !password);
+
+  // The standing "share these now" warning is only true when there is a
+  // password; the invite path replaces it with what actually happened.
+  els.adminCredentialsNote.textContent =
+    note || "Share these now — the password isn't shown again.";
+
+  els.adminCredentials.classList.remove('hidden');
+  adminCredentials = password ? { email, password } : null;
+}
+
+function hideAdminCredentials() {
+  els.adminCredentials.classList.add('hidden');
+  adminCredentials = null;
+}
+
+async function handleAdminCredentialsCopy() {
+  if (!adminCredentials) return;
+  const ok = await writeTextToClipboard(
+    `${adminCredentials.email}\n${adminCredentials.password}`
+  );
+  if (!ok) return;
+  els.adminCredentialsCopy.textContent = 'Copied';
+  setTimeout(() => {
+    els.adminCredentialsCopy.textContent = 'Copy both';
+  }, 2000);
+}
+
+/**
+ * Reset a provisioned dispatcher's password.
+ *
+ * Confirmed first because it invalidates the password they may already be
+ * using, and there is no mail to tell them so — the admin has to hand the new
+ * one over in person.
+ */
+async function handleAdminResetPassword(memberId) {
+  const member = orgRoster.find((m) => m.id === memberId);
+  const confirmed = window.confirm(
+    `Set a new password for ${member?.invited_email || 'this dispatcher'}? ` +
+      "You'll need to give it to them — their current password stops working."
+  );
+  if (!confirmed) return;
+
+  hideAdminError();
+  hideAdminCredentials();
+  try {
+    const result = await resetMemberPassword({ memberId });
+    showAdminCredentials('New password', result.email, result.password);
+  } catch (err) {
+    showAdminError(err.message || 'Could not reset the password');
+  }
+}
+
+async function handleAdminRosterClick(e) {
+  const btn = e.target.closest('[data-admin-action]');
+  if (!btn) return;
+  hideAdminError();
+  const memberId = btn.dataset.memberId;
+
+  if (btn.dataset.adminAction === 'reset-password') {
+    await handleAdminResetPassword(memberId);
+    return;
+  }
+
+  const member = orgRoster.find((m) => m.id === memberId);
+  const { ok, error } = await removeMember(supabase, memberId, member?.status);
+  if (!ok) {
+    showAdminError(error || 'Could not remove member');
+    return;
+  }
+  await handlePostRosterMutation(memberId);
+}
+
+async function handleAdminRoleChange(e) {
+  const select = e.target.closest('[data-admin-role-select]');
+  if (!select) return;
+  hideAdminError();
+  const memberId = select.dataset.memberId;
+  const { ok, error } = await updateMemberRole(supabase, memberId, select.value);
+  if (!ok) showAdminError(error || 'Could not update role');
+  await handlePostRosterMutation(memberId);
+}
+
+/**
+ * After any roster write, re-read the org context *first* when the row that
+ * changed is the acting admin's own: demoting or removing yourself revokes
+ * your access to the console, so `currentMembership` has to be re-derived
+ * before anything tries to repaint admin-only data with it.
+ */
+async function handlePostRosterMutation(memberId) {
+  if (memberId === currentMembership?.id) {
+    await refreshOrgContext();
+    if (!isOrgAdmin()) return; // updateAdminEntryPoints already bounced us out
+  }
+  await refreshAdminConsole();
+}
+
+async function handleAdminOrgNameSubmit(e) {
+  e.preventDefault();
+  hideAdminError();
+  if (!isOrgAdmin()) return;
+  const name = els.adminOrgNameInput.value.trim();
+  if (!name) return;
+  const { ok, error } = await updateOrganizationName(supabase, currentMembership.org_id, name);
+  if (!ok) {
+    showAdminError(error || 'Could not rename organization');
+    return;
+  }
+  els.adminOrgNameSaved.classList.remove('hidden');
+  setTimeout(() => els.adminOrgNameSaved.classList.add('hidden'), 2000);
+  await refreshOrgContext();
+  renderAdminConsole();
+}
+
+async function handleAdminLeave() {
+  hideAdminError();
+  const { ok, error } = await leaveOrganization(supabase);
+  if (!ok) {
+    showAdminError(error || 'Could not leave organization');
+    return;
+  }
+  await refreshOrgContext(); // drops admin rights, which bounces us to capture
 }
 
 // fetchAndSetApiKeys() is gone. Provider keys are never sent to the client
@@ -1634,13 +2230,20 @@ async function handleLogout() {
   currentMembership = null;
   currentInvites = [];
   orgRoster = [];
+  adminLoads = [];
+  adminRecentLoads = [];
+  adminActivityFilter = 'all';
   renderLoadsList();
+  renderInviteBanner(); // clear a previous user's invites off the screen
   // Don't leave the previous user's counts on screen for the next sign-in.
   els.usagePill.classList.add('hidden');
   els.usagePillLabel.textContent = '—';
   hideSettingsModal();
   hideOrgModal();
-  hideOrgDashboard();
+  // Back to capture *after* clearing currentMembership, so the next sign-in
+  // starts from a mode the new user actually qualifies for.
+  setAppMode('capture');
+  updateAdminEntryPoints();
   showAuthModal();
   // No `logout` command anymore: Rust holds no credentials to clear, since the
   // Deepgram token is passed per-capture and never stored.
@@ -1687,6 +2290,7 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsBtn.addEventListener('click', showSettingsModal);
   els.usagePill.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
+  els.passwordForm.addEventListener('submit', handlePasswordSubmit);
   els.logoutBtn.addEventListener('click', handleLogout);
 
   // Organization event listeners
@@ -1696,21 +2300,37 @@ window.addEventListener('DOMContentLoaded', () => {
     showSettingsModal();
   });
   els.orgCreateForm.addEventListener('submit', handleOrgCreateSubmit);
-  els.orgInviteForm.addEventListener('submit', handleOrgInviteSubmit);
   els.orgInvitesList.addEventListener('click', handleOrgModalClick);
-  els.orgRosterList.addEventListener('click', handleOrgModalClick);
-  els.orgRosterList.addEventListener('change', handleOrgRosterRoleChange);
+  els.inviteBannerList.addEventListener('click', handleInviteBannerClick);
   els.orgLeaveBtn.addEventListener('click', handleOrgLeave);
+  els.orgConsoleOpenBtn.addEventListener('click', () => setAppMode('admin', { persist: true }));
   els.orgModal.addEventListener('click', (e) => {
     if (e.target === els.orgModal) hideOrgModal();
   });
 
-  // Organization dashboard listeners
-  els.orgDashboardOpenBtn.addEventListener('click', showOrgDashboard);
-  els.orgDashboardCloseBtn.addEventListener('click', hideOrgDashboard);
-  els.orgDashboardModal.addEventListener('click', (e) => {
-    if (e.target === els.orgDashboardModal) hideOrgDashboard();
+  // Admin console listeners
+  els.adminModeBtn.addEventListener('click', () => setAppMode('admin', { persist: true }));
+  els.adminCaptureBtn.addEventListener('click', () => setAppMode('capture', { persist: true }));
+  els.adminRefreshBtn.addEventListener('click', refreshAdminConsole);
+  for (const btn of document.querySelectorAll('[data-admin-section]')) {
+    btn.addEventListener('click', () => setAdminSection(btn.dataset.adminSection));
+  }
+  els.adminCreateMemberForm.addEventListener('submit', handleAdminCreateMemberSubmit);
+  els.adminCredentialsCopy.addEventListener('click', handleAdminCredentialsCopy);
+  els.adminCredentialsDismiss.addEventListener('click', hideAdminCredentials);
+  els.adminRoster.addEventListener('click', handleAdminRosterClick);
+  els.adminRoster.addEventListener('change', handleAdminRoleChange);
+  els.adminActivityFilter.addEventListener('change', (e) => {
+    adminActivityFilter = e.target.value;
+    renderAdminActivity(aggregateDispatcherStats(adminLoads, orgRoster));
   });
+  els.adminOrgNameForm.addEventListener('submit', handleAdminOrgNameSubmit);
+  els.adminLeaveBtn.addEventListener('click', handleAdminLeave);
+  // The console has its own frameless-window controls (its topbar replaces the
+  // capture header, which is where the originals live).
+  els.adminWinMinimize.addEventListener('click', minimizeMainWindow);
+  els.adminWinMaximize.addEventListener('click', toggleMaximizeMainWindow);
+  els.adminWinClose.addEventListener('click', closeMainWindow);
 
   // Floating widget: show/hide the always-on-top capture remote.
   if (els.widgetBtn) {

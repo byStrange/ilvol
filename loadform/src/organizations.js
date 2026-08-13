@@ -101,7 +101,7 @@ export async function fetchOrgMembers(supabase, orgId) {
   if (!supabase || !orgId) return [];
   const { data, error } = await supabase
     .from('organization_members')
-    .select('id, user_id, invited_email, role, status, created_at, accepted_at')
+    .select('id, user_id, invited_email, role, status, created_at, accepted_at, provisioned_at')
     .eq('org_id', orgId)
     .neq('status', 'removed')
     .order('created_at', { ascending: true });
@@ -112,23 +112,12 @@ export async function fetchOrgMembers(supabase, orgId) {
   return data || [];
 }
 
-/** Invite a dispatcher by email (owner/admin only — RLS-enforced). */
-export async function inviteMember(supabase, orgId, email, role, invitedByUserId) {
-  const trimmed = (email || '').trim().toLowerCase();
-  if (!supabase || !orgId || !trimmed) return { ok: false, error: 'Email is required' };
-  const { error } = await supabase.from('organization_members').insert({
-    org_id: orgId,
-    invited_email: trimmed,
-    role: role || 'dispatcher',
-    status: 'invited',
-    invited_by: invitedByUserId,
-  });
-  if (error) {
-    console.error('inviteMember failed:', error);
-    return { ok: false, error: error.message };
-  }
-  return { ok: true };
-}
+// inviteMember() is gone. Adding someone now goes through the member-accounts
+// Edge Function (see createTeamMember in api.js), which provisions the login
+// outright and only falls back to an invite for an address that already has a
+// LoadForm account. A direct client insert would still pass RLS, but it would
+// skip the seat cap the function enforces — so there is deliberately no longer
+// a client-side way to create a membership row.
 
 /** Remove a member (owner/admin only — RLS-enforced). A pending invite is
  * revoked outright (deleted); an active membership is deactivated
@@ -176,6 +165,39 @@ export async function fetchOrgLoads(supabase, orgId) {
     return [];
   }
   return data || [];
+}
+
+/** Fetch the org's most recent loads with enough detail for the activity
+ * feed (org admins may see full load content — RLS grants the whole row).
+ * Capped rather than unbounded: the feed only ever shows the recent tail. */
+export async function fetchOrgRecentLoads(supabase, orgId, limit = 40) {
+  if (!supabase || !orgId) return [];
+  const { data, error } = await supabase
+    .from('loads')
+    .select('id, user_id, title, status, pickup_location, delivery_location, rate, equipment_type, created_at')
+    .eq('org_id', orgId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error('fetchOrgRecentLoads failed:', error);
+    return [];
+  }
+  return data || [];
+}
+
+/** Rename an organization (owner/admin only — RLS-enforced). Only `name` is
+ * updatable at all: the column-level grant in the follow-up migration keeps
+ * this call from being widened into an ownership or plan change. */
+export async function updateOrganizationName(supabase, orgId, name) {
+  const trimmed = (name || '').trim();
+  if (!supabase || !orgId) return { ok: false };
+  if (!trimmed) return { ok: false, error: 'Organization name is required' };
+  const { error } = await supabase.from('organizations').update({ name: trimmed }).eq('id', orgId);
+  if (error) {
+    console.error('updateOrganizationName failed:', error);
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
 }
 
 /**

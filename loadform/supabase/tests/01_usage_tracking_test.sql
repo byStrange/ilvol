@@ -75,9 +75,87 @@ do $$
 declare s record;
 begin
   select * into s from public.usage_summary('11111111-1111-1111-1111-111111111111');
-  if s.loads_month <> 2 then raise exception 'loads_month=% want 2', s.loads_month; end if;
+  -- The fixture is one capture session that produced two extractions. These
+  -- must not be conflated: "loads" is the session count (and what the quota
+  -- enforces), extractions are the per-call LLM invocations.
+  if s.captures_month <> 1 then
+    raise exception 'captures_month=% want 1', s.captures_month;
+  end if;
+  if s.extractions_month <> 2 then
+    raise exception 'extractions_month=% want 2', s.extractions_month;
+  end if;
   if s.audio_seconds_month <> 300 then raise exception 'audio=% want 300', s.audio_seconds_month; end if;
-  raise notice 'PASS usage_summary totals';
+  raise notice 'PASS usage_summary separates captures (1) from extractions (2)';
+end $$;
+
+-- ── 4b. quota_status: limits, usage, and plan resolution ───────────────────
+--
+-- Events are written at now() rather than a fixed timestamp so these
+-- assertions hold whenever the suite runs, not only during the fixture month.
+insert into auth.users (id, email) values
+  ('33333333-3333-3333-3333-333333333333', 'u3@test');
+
+do $$
+declare q record;
+begin
+  select * into q from public.quota_status('33333333-3333-3333-3333-333333333333');
+  if q.plan <> 'free' then raise exception 'plan=% want free', q.plan; end if;
+  if q.captures_limit <> 3 then raise exception 'captures_limit=% want 3', q.captures_limit; end if;
+  if q.extractions_limit <> 500 then
+    raise exception 'extractions_limit=% want 500', q.extractions_limit;
+  end if;
+  if q.captures_used <> 0 then raise exception 'captures_used=% want 0', q.captures_used; end if;
+  raise notice 'PASS quota_status defaults a user with no org to the free plan';
+end $$;
+
+-- Three captures today puts this user exactly at the free cap.
+insert into public.usage_events (user_id, event_type, created_at)
+select '33333333-3333-3333-3333-333333333333', 'capture_started', now()
+from generate_series(1, 3);
+
+do $$
+declare q record;
+begin
+  select * into q from public.quota_status('33333333-3333-3333-3333-333333333333');
+  if q.captures_used <> 3 then raise exception 'captures_used=% want 3', q.captures_used; end if;
+  if q.captures_used < q.captures_limit then
+    raise exception 'user should be at the cap: used=% limit=%', q.captures_used, q.captures_limit;
+  end if;
+  raise notice 'PASS quota_status counts today''s captures against the cap';
+end $$;
+
+-- A paid plan is expressed as a NULL limit, and it must reach the user through
+-- their org membership.
+insert into public.plan_limits (plan, daily_captures, daily_extractions)
+values ('unlimited', null, null);
+
+do $$
+declare
+  v_org uuid;
+  q record;
+begin
+  insert into public.organizations (name, owner_user_id, plan)
+  values ('Test Co', '33333333-3333-3333-3333-333333333333', 'unlimited')
+  returning id into v_org;
+
+  insert into public.organization_members (org_id, user_id, invited_email, role, status)
+  values (v_org, '33333333-3333-3333-3333-333333333333', 'u3@test', 'owner', 'active');
+
+  select * into q from public.quota_status('33333333-3333-3333-3333-333333333333');
+  if q.plan <> 'unlimited' then raise exception 'plan=% want unlimited', q.plan; end if;
+  if q.captures_limit is not null then
+    raise exception 'captures_limit=% want NULL (unlimited)', q.captures_limit;
+  end if;
+  raise notice 'PASS quota_status resolves limits through the org plan';
+
+  -- A plan name with no matching row must fall back to free, never to
+  -- unlimited — otherwise a typo in organizations.plan hands out free capacity.
+  update public.organizations set plan = 'typo-plan' where id = v_org;
+  select * into q from public.quota_status('33333333-3333-3333-3333-333333333333');
+  if q.captures_limit <> 3 then
+    raise exception 'unknown plan gave limit=% want 3 (free fallback)', q.captures_limit;
+  end if;
+  raise notice 'PASS unknown plan falls back to the free cap';
 end $$;
 
 -- ── 5. RLS: a user sees only their own rows ────────────────────────────────
@@ -126,11 +204,15 @@ do $$
 declare s record;
 begin
   select * into s from public.usage_summary();
-  if s.loads_month <> 2 then raise exception 'self summary=% want 2', s.loads_month; end if;
+  if s.extractions_month <> 2 then
+    raise exception 'self summary=% want 2', s.extractions_month;
+  end if;
 
   -- Asking about someone else returns zeroes, not their data.
   select * into s from public.usage_summary('22222222-2222-2222-2222-222222222222');
-  if s.loads_month <> 0 then raise exception 'RLS leak via usage_summary: got %', s.loads_month; end if;
+  if s.extractions_month <> 0 then
+    raise exception 'RLS leak via usage_summary: got %', s.extractions_month;
+  end if;
   raise notice 'PASS usage_summary respects RLS for other users';
 end $$;
 
@@ -138,21 +220,44 @@ reset role;
 
 -- ── 7. Rollup is reproducible from the ledger ──────────────────────────────
 do $$
-declare before_json text; after_json text;
+declare
+  before_state text;
+  after_state text;
+  expected_rows integer;
+  actual_rows integer;
 begin
-  select string_agg(t::text, '|' order by t::text) into before_json from public.usage_daily t;
-  perform public.rebuild_usage_daily();
-  select string_agg(t::text, '|' order by t::text) into after_json from public.usage_daily t;
+  -- updated_at moves on rebuild, so fingerprint the counters only.
+  select string_agg(f, '|' order by f) into before_state from (
+    select concat_ws(':', user_id, day, capture_sessions, loads_extracted,
+                     audio_seconds, llm_input_tokens, llm_output_tokens, est_cost_usd) as f
+    from public.usage_daily
+  ) s;
 
-  -- updated_at moves, so compare the counters only.
-  if (select count(*) from public.usage_daily) <> 2 then
-    raise exception 'rebuild produced wrong row count';
+  perform public.rebuild_usage_daily();
+
+  select string_agg(f, '|' order by f) into after_state from (
+    select concat_ws(':', user_id, day, capture_sessions, loads_extracted,
+                     audio_seconds, llm_input_tokens, llm_output_tokens, est_cost_usd) as f
+    from public.usage_daily
+  ) s;
+
+  if before_state is distinct from after_state then
+    raise exception 'rebuild changed the counters. before: % / after: %',
+      before_state, after_state;
   end if;
-  if (select loads_extracted from public.usage_daily
-      where user_id = '11111111-1111-1111-1111-111111111111') <> 2 then
-    raise exception 'rebuild lost data';
+
+  -- Derived from the ledger rather than hardcoded, so adding fixtures above
+  -- doesn't make this fail for reasons that have nothing to do with the rebuild.
+  select count(*) into expected_rows from (
+    select distinct user_id, public.billing_day(created_at) from public.usage_events
+  ) g;
+  select count(*) into actual_rows from public.usage_daily;
+  if actual_rows <> expected_rows then
+    raise exception 'rebuild produced % rows, want % (one per user per billing day)',
+      actual_rows, expected_rows;
   end if;
-  raise notice 'PASS rebuild_usage_daily reproduces the rollup from events';
+
+  raise notice 'PASS rebuild_usage_daily reproduces the rollup from events (% rows)', actual_rows;
 end $$;
 
 -- ── 8. api_keys really is locked down ──────────────────────────────────────
