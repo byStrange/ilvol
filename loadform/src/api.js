@@ -144,6 +144,50 @@ export async function fetchQuotaStatus() {
 }
 
 /**
+ * Create a login for a dispatcher, as their org owner/admin.
+ *
+ * Returns the password exactly once — it is never stored anywhere the app can
+ * read it back, so the only copy is the one shown to the owner. If `password` is
+ * omitted the server generates one.
+ *
+ * `outcome` says what actually happened: 'created' for a new login (credentials
+ * included), or 'invited' when that address already had a LoadForm account and
+ * could therefore only be asked to join.
+ */
+export async function createTeamMember({ email, password = null, role = 'dispatcher' }) {
+  const { data, error } = await supabase.functions.invoke('member-accounts', {
+    body: { action: 'create', email, password, role },
+  });
+  if (error || !data?.outcome) throw await edgeError(error, data);
+  return data;
+}
+
+/**
+ * Set a new password on an account the org created, for a dispatcher who forgot
+ * theirs. With no email provider there is no self-serve reset, so this is the
+ * only way back in — and it only works on logins the org provisioned itself.
+ */
+export async function resetMemberPassword({ memberId, password = null }) {
+  const { data, error } = await supabase.functions.invoke('member-accounts', {
+    body: { action: 'reset_password', member_id: memberId, password },
+  });
+  if (error || !data?.password) throw await edgeError(error, data);
+  return data;
+}
+
+/**
+ * Change the signed-in user's own password.
+ *
+ * The dispatcher-facing half of provisioned accounts: an owner hands over a
+ * generated password, and this is how it stops being the owner's to know.
+ */
+export async function changeOwnPassword(password) {
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/**
  * Report how long a capture ran, once it stops.
  *
  * Best-effort and intentionally silent on failure: this is analytics, and a

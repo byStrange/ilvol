@@ -136,6 +136,38 @@
           </p>
         </div>
 
+        <!--
+          Anyone whose login was created for them by their office needs a way to
+          make it theirs. Sits in Settings rather than behind an email link
+          because there is no mail in this flow at all.
+        -->
+        <div class="mb-5 p-3 rounded-xl bg-slate-950/40 border border-white/5">
+          <label class="block text-xs text-slate-500 mb-2">Change password</label>
+          <form id="password-form" class="space-y-2">
+            <input
+              id="password-new"
+              type="password"
+              placeholder="New password"
+              class="lf-input w-full text-sm"
+              autocomplete="new-password"
+            />
+            <input
+              id="password-confirm"
+              type="password"
+              placeholder="Confirm new password"
+              class="lf-input w-full text-sm"
+              autocomplete="new-password"
+            />
+            <button
+              type="submit"
+              class="lf-btn w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium"
+            >
+              Update password
+            </button>
+          </form>
+          <p id="password-message" class="text-[11px] mt-2 hidden"></p>
+        </div>
+
         <button
           id="org-open-btn"
           type="button"
@@ -344,24 +376,83 @@
             <!-- Team -->
             <section id="admin-panel-team" class="lf-admin-panel hidden">
               <div class="glass glass-lit rounded-2xl p-5 mb-5">
-                <h2 class="text-sm font-semibold text-white mb-1">Invite a dispatcher</h2>
-                <p class="text-xs text-slate-500 mb-4">They sign in with this email and their loads roll up to this organization.</p>
-                <form id="admin-invite-form" class="flex flex-col sm:flex-row gap-2">
-                  <input
-                    id="admin-invite-email"
-                    type="email"
-                    placeholder="dispatcher@email.com"
-                    class="lf-input flex-1"
-                    autocomplete="off"
-                  />
-                  <select id="admin-invite-role" class="lf-select sm:w-auto">
-                    <option value="dispatcher">Dispatcher</option>
-                    <option value="admin">Admin</option>
-                  </select>
-                  <button type="submit" class="lf-btn lf-btn-primary py-2 px-4 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-sm font-medium whitespace-nowrap">
-                    Send invite
-                  </button>
+                <h2 class="text-sm font-semibold text-white mb-1">Add a dispatcher</h2>
+                <p class="text-xs text-slate-500 mb-4">
+                  Creates the login for them. No email is sent — you'll get the password to hand over,
+                  and they can change it themselves once they're in.
+                </p>
+                <form id="admin-create-member-form" class="space-y-2">
+                  <div class="flex flex-col sm:flex-row gap-2">
+                    <input
+                      id="admin-create-email"
+                      type="email"
+                      placeholder="dispatcher@yourcompany.com"
+                      class="lf-input flex-1"
+                      autocomplete="off"
+                      required
+                    />
+                    <select id="admin-create-role" class="lf-select sm:w-auto">
+                      <option value="dispatcher">Dispatcher</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <div class="flex flex-col sm:flex-row gap-2">
+                    <input
+                      id="admin-create-password"
+                      type="text"
+                      placeholder="Password (leave blank to generate one)"
+                      class="lf-input flex-1"
+                      autocomplete="off"
+                    />
+                    <button
+                      id="admin-create-submit"
+                      type="submit"
+                      class="lf-btn lf-btn-primary py-2 px-4 bg-emerald-500 hover:bg-emerald-600 text-slate-900 text-sm font-medium whitespace-nowrap"
+                    >
+                      Create account
+                    </button>
+                  </div>
                 </form>
+
+                <!--
+                  Credentials appear here once, right after creation. The password
+                  is never stored anywhere the app can read back, so this is the
+                  only copy — hence the explicit warning rather than a toast that
+                  disappears on its own.
+                -->
+                <div id="admin-credentials" class="lf-credentials mt-4 hidden">
+                  <div class="flex items-start justify-between gap-3 mb-3">
+                    <div>
+                      <p id="admin-credentials-title" class="text-sm font-semibold text-white">Account created</p>
+                      <p id="admin-credentials-note" class="text-xs text-slate-400 mt-0.5">Share these now — the password isn't shown again.</p>
+                    </div>
+                    <button
+                      id="admin-credentials-dismiss"
+                      type="button"
+                      class="lf-icon-btn h-7 w-7 shrink-0 text-slate-400"
+                      title="Dismiss"
+                    >
+                      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                    </button>
+                  </div>
+                  <dl class="space-y-1.5 mb-3">
+                    <div class="flex items-baseline gap-2">
+                      <dt class="text-[11px] text-slate-500 w-20 shrink-0">Email</dt>
+                      <dd id="admin-credentials-email" class="text-sm text-slate-100 font-mono break-all"></dd>
+                    </div>
+                    <div id="admin-credentials-password-row" class="flex items-baseline gap-2">
+                      <dt class="text-[11px] text-slate-500 w-20 shrink-0">Password</dt>
+                      <dd id="admin-credentials-password" class="text-sm text-slate-100 font-mono break-all"></dd>
+                    </div>
+                  </dl>
+                  <button
+                    id="admin-credentials-copy"
+                    type="button"
+                    class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium"
+                  >
+                    Copy both
+                  </button>
+                </div>
               </div>
 
               <div class="glass glass-lit rounded-2xl p-5">

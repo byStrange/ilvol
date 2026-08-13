@@ -25,6 +25,9 @@ import {
   reportCaptureEnded,
   fetchUsageSummary,
   fetchQuotaStatus,
+  createTeamMember,
+  resetMemberPassword,
+  changeOwnPassword,
 } from './api.js';
 import {
   saveLoad,
@@ -43,7 +46,6 @@ import {
   declineInvite,
   leaveOrganization,
   fetchOrgMembers,
-  inviteMember,
   removeMember,
   updateMemberRole,
   fetchOrgLoads,
@@ -183,6 +185,8 @@ let adminSection = 'overview'; // overview | team | activity | settings
 let adminLoads = []; // aggregate rows (user_id/status/created_at) for the org
 let adminRecentLoads = []; // detailed recent tail, for the activity feed
 let adminActivityFilter = 'all'; // 'all' | a dispatcher user_id
+let adminCreateInFlight = false; // guards against a double-submit minting two accounts
+let adminCredentials = null; // { email, password } — the only copy, held for the copy button
 const MODE_STORAGE_KEY = 'loadform.appMode';
 
 // ─── DOM Elements ─────────────────────────────────────────────────────────
@@ -237,6 +241,12 @@ const els = {
   settingsUserEmail: document.getElementById('settings-user-email'),
   settingsCloseBtn: document.getElementById('settings-close-btn'),
   logoutBtn: document.getElementById('logout-btn'),
+  // Change own password (settings) — the other half of provisioned accounts:
+  // whoever was handed a password needs somewhere to replace it.
+  passwordForm: document.getElementById('password-form'),
+  passwordNew: document.getElementById('password-new'),
+  passwordConfirm: document.getElementById('password-confirm'),
+  passwordMessage: document.getElementById('password-message'),
   // Usage display
   usagePill: document.getElementById('usage-pill'),
   usagePillLabel: document.getElementById('usage-pill-label'),
@@ -292,9 +302,19 @@ const els = {
   adminStatsBody: document.getElementById('admin-stats-body'),
   adminStatsEmpty: document.getElementById('admin-stats-empty'),
   // Admin console — team
-  adminInviteForm: document.getElementById('admin-invite-form'),
-  adminInviteEmail: document.getElementById('admin-invite-email'),
-  adminInviteRole: document.getElementById('admin-invite-role'),
+  adminCreateMemberForm: document.getElementById('admin-create-member-form'),
+  adminCreateEmail: document.getElementById('admin-create-email'),
+  adminCreateRole: document.getElementById('admin-create-role'),
+  adminCreatePassword: document.getElementById('admin-create-password'),
+  adminCreateSubmit: document.getElementById('admin-create-submit'),
+  adminCredentials: document.getElementById('admin-credentials'),
+  adminCredentialsTitle: document.getElementById('admin-credentials-title'),
+  adminCredentialsEmail: document.getElementById('admin-credentials-email'),
+  adminCredentialsPassword: document.getElementById('admin-credentials-password'),
+  adminCredentialsPasswordRow: document.getElementById('admin-credentials-password-row'),
+  adminCredentialsNote: document.getElementById('admin-credentials-note'),
+  adminCredentialsCopy: document.getElementById('admin-credentials-copy'),
+  adminCredentialsDismiss: document.getElementById('admin-credentials-dismiss'),
   adminRoster: document.getElementById('admin-roster'),
   adminSeatSummary: document.getElementById('admin-seat-summary'),
   // Admin console — activity
@@ -1293,11 +1313,52 @@ function showSettingsModal() {
   if (!currentUser) return;
   els.settingsUserEmail.textContent = currentUser.email || 'Unknown';
   els.settingsModal.classList.remove('hidden');
+  // A password half-typed on a previous visit shouldn't still be sitting there.
+  els.passwordForm.reset();
+  els.passwordMessage.classList.add('hidden');
   refreshUsage();
 }
 
 function hideSettingsModal() {
   els.settingsModal.classList.add('hidden');
+}
+
+/** Matches supabase/config.toml's minimum_password_length, so we reject a short
+ * password here rather than letting GoTrue do it a round-trip later. */
+const MIN_PASSWORD_LENGTH = 6;
+
+/**
+ * Replace the signed-in user's own password. The dispatcher-facing half of
+ * provisioned accounts: this is how a handed-over password stops being the
+ * owner's to know.
+ */
+async function handlePasswordSubmit(e) {
+  e.preventDefault();
+  const password = els.passwordNew.value;
+  const confirm = els.passwordConfirm.value;
+
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    showPasswordMessage(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`, false);
+    return;
+  }
+  if (password !== confirm) {
+    showPasswordMessage("Those two passwords don't match", false);
+    return;
+  }
+
+  const { ok, error } = await changeOwnPassword(password);
+  if (!ok) {
+    showPasswordMessage(error || 'Could not update your password', false);
+    return;
+  }
+  els.passwordForm.reset();
+  showPasswordMessage('Password updated.', true);
+}
+
+function showPasswordMessage(message, ok) {
+  els.passwordMessage.textContent = message;
+  els.passwordMessage.classList.remove('hidden', 'text-emerald-400', 'text-red-400');
+  els.passwordMessage.classList.add(ok ? 'text-emerald-400' : 'text-red-400');
 }
 
 // ─── Usage Display ──────────────────────────────────────────────────────────
@@ -1748,7 +1809,7 @@ function initialModeFor() {
 
 const ADMIN_SECTIONS = {
   overview: { title: 'Overview', sub: 'How your dispatchers are performing.' },
-  team: { title: 'Team', sub: 'Invite dispatchers and manage who can do what.' },
+  team: { title: 'Team', sub: 'Add dispatchers and manage who can do what.' },
   activity: { title: 'Activity', sub: 'Every load your dispatchers have captured.' },
   settings: { title: 'Settings', sub: 'Organization name, seats, and billing.' },
 };
@@ -1766,6 +1827,9 @@ function setAdminSection(section) {
   if (!ADMIN_SECTIONS[section]) return;
   adminSection = section;
   hideAdminError();
+  // Credentials are shown once, in context. Navigating away is the admin saying
+  // they're done with them.
+  hideAdminCredentials();
   for (const btn of document.querySelectorAll('[data-admin-section]')) {
     btn.classList.toggle('is-active', btn.dataset.adminSection === section);
   }
@@ -1866,6 +1930,9 @@ function renderAdminTeam() {
   for (const member of orgRoster) {
     const isPending = member.status === 'invited';
     const canManage = member.role !== 'owner';
+    // Only logins this org created can have their password reset from here —
+    // see the provisioned_at comment in the migration.
+    const canResetPassword = canManage && !isPending && !!member.provisioned_at;
     const roleControl = canManage
       ? `<select class="lf-select w-auto text-xs py-1" data-admin-role-select data-member-id="${member.id}">
            <option value="dispatcher"${member.role === 'dispatcher' ? ' selected' : ''}>Dispatcher</option>
@@ -1885,6 +1952,7 @@ function renderAdminTeam() {
       ${isPending ? '<span class="lf-admin-tag is-pending shrink-0">pending</span>' : ''}
       <span class="flex items-center gap-2 shrink-0">
         ${roleControl}
+        ${canResetPassword ? `<button type="button" class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium" data-admin-action="reset-password" data-member-id="${member.id}">Reset password</button>` : ''}
         ${canManage ? `<button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium" data-admin-action="remove" data-member-id="${member.id}">${isPending ? 'Revoke' : 'Remove'}</button>` : ''}
       </span>`;
     els.adminRoster.appendChild(row);
@@ -1961,32 +2029,131 @@ function formatAdminDate(value) {
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-async function handleAdminInviteSubmit(e) {
+/**
+ * Create a dispatcher's login, or fall back to an invite.
+ *
+ * The server decides which of the two happened — an address that already has a
+ * LoadForm account can't have one made for it — so the outcome it reports, not
+ * what was submitted, is what gets shown.
+ */
+async function handleAdminCreateMemberSubmit(e) {
   e.preventDefault();
   hideAdminError();
-  if (!isOrgAdmin()) return;
-  const email = els.adminInviteEmail.value.trim();
+  hideAdminCredentials();
+  if (!isOrgAdmin() || adminCreateInFlight) return;
+
+  const email = els.adminCreateEmail.value.trim();
   if (!email) return;
-  const { ok, error } = await inviteMember(
-    supabase,
-    currentMembership.org_id,
-    email,
-    els.adminInviteRole.value,
-    currentUser.id
-  );
-  if (!ok) {
-    showAdminError(error || 'Could not send invite');
-    return;
+  const password = els.adminCreatePassword.value.trim();
+
+  setAdminCreateBusy(true);
+  try {
+    const result = await createTeamMember({
+      email,
+      password: password || null,
+      role: els.adminCreateRole.value,
+    });
+    els.adminCreateMemberForm.reset();
+    if (result.outcome === 'created') {
+      showAdminCredentials('Account created', result.email, result.password);
+    } else {
+      // No credentials to hand over on this path: they already have a login of
+      // their own, so all we did was ask them to join.
+      showAdminCredentials(
+        'Invitation sent',
+        result.email,
+        null,
+        'That address already has a LoadForm account, so they were invited instead. ' +
+          'They join once they accept.'
+      );
+    }
+    await refreshAdminConsole();
+  } catch (err) {
+    showAdminError(err.message || 'Could not create the account');
+  } finally {
+    setAdminCreateBusy(false);
   }
-  els.adminInviteForm.reset();
-  await refreshAdminConsole();
+}
+
+function setAdminCreateBusy(busy) {
+  adminCreateInFlight = busy;
+  els.adminCreateSubmit.disabled = busy;
+  els.adminCreateSubmit.textContent = busy ? 'Creating…' : 'Create account';
+}
+
+/**
+ * Show credentials once. `password` is null on the invite path, where there is
+ * nothing to hand over — the row is dropped rather than shown empty.
+ */
+function showAdminCredentials(title, email, password, note = null) {
+  els.adminCredentialsTitle.textContent = title;
+  els.adminCredentialsEmail.textContent = email;
+  els.adminCredentialsPassword.textContent = password || '';
+  els.adminCredentialsPasswordRow.classList.toggle('hidden', !password);
+  els.adminCredentialsCopy.classList.toggle('hidden', !password);
+
+  // The standing "share these now" warning is only true when there is a
+  // password; the invite path replaces it with what actually happened.
+  els.adminCredentialsNote.textContent =
+    note || "Share these now — the password isn't shown again.";
+
+  els.adminCredentials.classList.remove('hidden');
+  adminCredentials = password ? { email, password } : null;
+}
+
+function hideAdminCredentials() {
+  els.adminCredentials.classList.add('hidden');
+  adminCredentials = null;
+}
+
+async function handleAdminCredentialsCopy() {
+  if (!adminCredentials) return;
+  const ok = await writeTextToClipboard(
+    `${adminCredentials.email}\n${adminCredentials.password}`
+  );
+  if (!ok) return;
+  els.adminCredentialsCopy.textContent = 'Copied';
+  setTimeout(() => {
+    els.adminCredentialsCopy.textContent = 'Copy both';
+  }, 2000);
+}
+
+/**
+ * Reset a provisioned dispatcher's password.
+ *
+ * Confirmed first because it invalidates the password they may already be
+ * using, and there is no mail to tell them so — the admin has to hand the new
+ * one over in person.
+ */
+async function handleAdminResetPassword(memberId) {
+  const member = orgRoster.find((m) => m.id === memberId);
+  const confirmed = window.confirm(
+    `Set a new password for ${member?.invited_email || 'this dispatcher'}? ` +
+      "You'll need to give it to them — their current password stops working."
+  );
+  if (!confirmed) return;
+
+  hideAdminError();
+  hideAdminCredentials();
+  try {
+    const result = await resetMemberPassword({ memberId });
+    showAdminCredentials('New password', result.email, result.password);
+  } catch (err) {
+    showAdminError(err.message || 'Could not reset the password');
+  }
 }
 
 async function handleAdminRosterClick(e) {
-  const btn = e.target.closest('[data-admin-action="remove"]');
+  const btn = e.target.closest('[data-admin-action]');
   if (!btn) return;
   hideAdminError();
   const memberId = btn.dataset.memberId;
+
+  if (btn.dataset.adminAction === 'reset-password') {
+    await handleAdminResetPassword(memberId);
+    return;
+  }
+
   const member = orgRoster.find((m) => m.id === memberId);
   const { ok, error } = await removeMember(supabase, memberId, member?.status);
   if (!ok) {
@@ -2123,6 +2290,7 @@ window.addEventListener('DOMContentLoaded', () => {
   els.settingsBtn.addEventListener('click', showSettingsModal);
   els.usagePill.addEventListener('click', showSettingsModal);
   els.settingsCloseBtn.addEventListener('click', hideSettingsModal);
+  els.passwordForm.addEventListener('submit', handlePasswordSubmit);
   els.logoutBtn.addEventListener('click', handleLogout);
 
   // Organization event listeners
@@ -2147,7 +2315,9 @@ window.addEventListener('DOMContentLoaded', () => {
   for (const btn of document.querySelectorAll('[data-admin-section]')) {
     btn.addEventListener('click', () => setAdminSection(btn.dataset.adminSection));
   }
-  els.adminInviteForm.addEventListener('submit', handleAdminInviteSubmit);
+  els.adminCreateMemberForm.addEventListener('submit', handleAdminCreateMemberSubmit);
+  els.adminCredentialsCopy.addEventListener('click', handleAdminCredentialsCopy);
+  els.adminCredentialsDismiss.addEventListener('click', hideAdminCredentials);
   els.adminRoster.addEventListener('click', handleAdminRosterClick);
   els.adminRoster.addEventListener('change', handleAdminRoleChange);
   els.adminActivityFilter.addEventListener('change', (e) => {

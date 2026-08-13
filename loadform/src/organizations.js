@@ -101,7 +101,7 @@ export async function fetchOrgMembers(supabase, orgId) {
   if (!supabase || !orgId) return [];
   const { data, error } = await supabase
     .from('organization_members')
-    .select('id, user_id, invited_email, role, status, created_at, accepted_at')
+    .select('id, user_id, invited_email, role, status, created_at, accepted_at, provisioned_at')
     .eq('org_id', orgId)
     .neq('status', 'removed')
     .order('created_at', { ascending: true });
@@ -112,23 +112,12 @@ export async function fetchOrgMembers(supabase, orgId) {
   return data || [];
 }
 
-/** Invite a dispatcher by email (owner/admin only — RLS-enforced). */
-export async function inviteMember(supabase, orgId, email, role, invitedByUserId) {
-  const trimmed = (email || '').trim().toLowerCase();
-  if (!supabase || !orgId || !trimmed) return { ok: false, error: 'Email is required' };
-  const { error } = await supabase.from('organization_members').insert({
-    org_id: orgId,
-    invited_email: trimmed,
-    role: role || 'dispatcher',
-    status: 'invited',
-    invited_by: invitedByUserId,
-  });
-  if (error) {
-    console.error('inviteMember failed:', error);
-    return { ok: false, error: error.message };
-  }
-  return { ok: true };
-}
+// inviteMember() is gone. Adding someone now goes through the member-accounts
+// Edge Function (see createTeamMember in api.js), which provisions the login
+// outright and only falls back to an invite for an address that already has a
+// LoadForm account. A direct client insert would still pass RLS, but it would
+// skip the seat cap the function enforces — so there is deliberately no longer
+// a client-side way to create a membership row.
 
 /** Remove a member (owner/admin only — RLS-enforced). A pending invite is
  * revoked outright (deleted); an active membership is deactivated

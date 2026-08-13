@@ -1338,6 +1338,18 @@ button {
   color: #fcd34d;
 }
 
+/*
+ * One-time credentials panel. Amber rather than the neutral panel treatment:
+ * the password on it is the only copy that will ever exist, so the card has to
+ * read as something to act on before it's dismissed.
+ */
+.lf-credentials {
+  padding: 0.875rem 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
 /* Narrow windows: collapse the sidebar to an icon rail. */
 @media (max-width: 720px) {
   .lf-admin-sidebar {
