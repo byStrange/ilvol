@@ -264,6 +264,49 @@
     </div>
 
     <!--
+      Outcome prompt, shown when a dispatcher finishes a load and starts the
+      next one. Asked here rather than in a settings screen because this is the
+      one moment they still remember how the call ended.
+
+      "Not yet" is a real answer and is styled as an equal, not a dismissal:
+      loads sit unresolved for a day while a broker decides. If picking it felt
+      like failing to answer, dispatchers would click "Booked" to make the
+      dialog go away — which would poison the exact number this exists to build.
+    -->
+    <div id="outcome-modal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+      <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-sm">
+        <h2 class="text-lg font-bold text-white">How did this one go?</h2>
+        <p id="outcome-lane" class="text-xs text-slate-500 mt-1 mb-5 truncate"></p>
+        <div class="space-y-2">
+          <button
+            type="button"
+            data-outcome="booked"
+            class="lf-btn w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-medium"
+          >
+            Booked it
+          </button>
+          <button
+            type="button"
+            data-outcome="lost"
+            class="lf-btn w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium"
+          >
+            Didn't get it
+          </button>
+          <button
+            type="button"
+            data-outcome="pending"
+            class="lf-btn w-full py-2.5 bg-slate-800/60 hover:bg-slate-700 text-slate-300 font-medium"
+          >
+            Not yet — still working it
+          </button>
+        </div>
+        <p class="text-[11px] text-slate-600 mt-4 text-center">
+          You can change this later from Load History.
+        </p>
+      </div>
+    </div>
+
+    <!--
       Admin console — the whole app for an org owner/admin, not a panel inside
       it. Peer of #app rather than a child: exactly one of the two is visible
       at a time (see setAppMode in main.js), so admins never see the capture
@@ -346,29 +389,50 @@
             <section id="admin-panel-overview" class="lf-admin-panel">
               <div id="admin-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6"></div>
 
-              <div class="glass glass-lit rounded-2xl p-5">
-                <div class="flex items-center justify-between mb-4">
-                  <h2 class="text-sm font-semibold text-white">Dispatcher performance</h2>
-                  <span class="text-xs text-slate-500">Loads captured</span>
+              <!--
+                Org-level trend. Aggregated across everyone deliberately: one
+                dispatcher's day is too jagged at this team size to read as a
+                trend, while the org total has the volume to show a real shape.
+              -->
+              <div class="glass glass-lit rounded-2xl p-5 mb-5">
+                <div class="flex items-baseline justify-between mb-4">
+                  <h2 class="text-sm font-semibold text-white">Calls captured</h2>
+                  <span class="text-xs text-slate-500">Last 30 days</span>
                 </div>
+                <div id="admin-trend"></div>
+              </div>
+
+              <div class="glass glass-lit rounded-2xl p-5">
+                <div class="flex items-center justify-between mb-1">
+                  <h2 class="text-sm font-semibold text-white">Dispatcher performance</h2>
+                  <span class="text-xs text-slate-500">Click a row for the full report</span>
+                </div>
+                <!--
+                  Booked and rate per mile sit side by side on purpose. Ranking
+                  on volume alone rewards whoever takes the cheapest freight
+                  fastest, so the quality column travels with the count.
+                -->
+                <p class="text-xs text-slate-500 mb-4">
+                  Booking rate counts resolved calls only — loads still being worked aren't counted against anyone.
+                </p>
                 <div class="overflow-x-auto">
                   <table class="w-full text-sm">
                     <thead>
                       <tr class="text-left text-xs text-slate-500 border-b border-white/5">
-                        <th class="pb-2 font-medium">Dispatcher</th>
-                        <th class="pb-2 font-medium text-right">Total</th>
-                        <th class="pb-2 font-medium text-right">7 days</th>
-                        <th class="pb-2 font-medium text-right">30 days</th>
-                        <th class="pb-2 font-medium text-right">Active</th>
-                        <th class="pb-2 font-medium text-right">Completed</th>
-                        <th class="pb-2 font-medium w-28">Share</th>
+                        <th class="pb-2 pr-3 font-medium">Dispatcher</th>
+                        <th class="pb-2 px-3 font-medium text-right">Booked</th>
+                        <th class="pb-2 px-3 font-medium text-right">Booking rate</th>
+                        <th class="pb-2 px-3 font-medium text-right">Revenue</th>
+                        <th class="pb-2 px-3 font-medium text-right">$ / mile</th>
+                        <th class="pb-2 px-3 font-medium text-right">Calls</th>
+                        <th class="pb-2 pl-3 font-medium w-28 text-right">Last 14 days</th>
                       </tr>
                     </thead>
                     <tbody id="admin-stats-body"></tbody>
                   </table>
                 </div>
                 <p id="admin-stats-empty" class="text-sm text-slate-500 text-center py-8 hidden">
-                  No loads recorded for this organization yet. Invite dispatchers from the Team tab — their loads show up here as they capture them.
+                  No loads recorded for this organization yet. Add dispatchers from the Team tab — their loads show up here as they capture them.
                 </p>
               </div>
             </section>
@@ -461,6 +525,65 @@
                   <span id="admin-seat-summary" class="text-xs text-slate-500"></span>
                 </div>
                 <div id="admin-roster" class="space-y-2"></div>
+              </div>
+            </section>
+
+            <!--
+              One dispatcher's report. A panel rather than a modal because it is
+              a destination with its own depth, not an interruption — and it
+              relieves the overview, which otherwise grows a column every time
+              someone wants one more number.
+
+              Not in the sidebar nav: it's reached by clicking a person, and has
+              no meaning without one selected.
+            -->
+            <section id="admin-panel-dispatcher" class="lf-admin-panel hidden">
+              <button id="admin-dispatcher-back" type="button" class="lf-back-link mb-4">
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+                All dispatchers
+              </button>
+
+              <div class="glass glass-lit rounded-2xl p-5 mb-5">
+                <div class="flex flex-wrap items-start justify-between gap-4">
+                  <div class="min-w-0">
+                    <h2 id="admin-dispatcher-name" class="text-lg font-bold text-white truncate">Dispatcher</h2>
+                    <p id="admin-dispatcher-sub" class="text-xs text-slate-500 mt-0.5"></p>
+                  </div>
+                  <div id="admin-dispatcher-actions" class="flex items-center gap-2 shrink-0"></div>
+                </div>
+                <div id="admin-dispatcher-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-5"></div>
+              </div>
+
+              <div class="glass glass-lit rounded-2xl p-5 mb-5">
+                <div class="flex items-baseline justify-between mb-4">
+                  <h3 class="text-sm font-semibold text-white">Calls per day</h3>
+                  <span class="text-xs text-slate-500">Last 30 days</span>
+                </div>
+                <div id="admin-dispatcher-trend"></div>
+              </div>
+
+              <div class="grid lg:grid-cols-2 gap-5 mb-5">
+                <div class="glass glass-lit rounded-2xl p-5">
+                  <h3 class="text-sm font-semibold text-white mb-1">Outcomes</h3>
+                  <p class="text-xs text-slate-500 mb-4">Every call they've captured.</p>
+                  <div id="admin-dispatcher-outcomes" class="grid grid-cols-3 gap-3"></div>
+                </div>
+                <div class="glass glass-lit rounded-2xl p-5">
+                  <h3 class="text-sm font-semibold text-white mb-1">Lanes they run</h3>
+                  <p class="text-xs text-slate-500 mb-4">Busiest first.</p>
+                  <div id="admin-dispatcher-lanes" class="space-y-2"></div>
+                </div>
+              </div>
+
+              <div class="glass glass-lit rounded-2xl p-5">
+                <div class="flex items-center justify-between mb-4">
+                  <h3 class="text-sm font-semibold text-white">Their loads</h3>
+                  <span id="admin-dispatcher-load-count" class="text-xs text-slate-500"></span>
+                </div>
+                <div id="admin-dispatcher-loads" class="space-y-2"></div>
+                <p id="admin-dispatcher-loads-empty" class="text-sm text-slate-500 text-center py-8 hidden">
+                  This dispatcher hasn't captured any loads yet.
+                </p>
               </div>
             </section>
 

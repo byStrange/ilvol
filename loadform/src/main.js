@@ -34,6 +34,7 @@ import {
   fetchLoads,
   fetchLoad,
   setLoadStatus,
+  setLoadOutcome,
   deleteLoad,
   loadToDriverText,
 } from './loads.js';
@@ -50,8 +51,11 @@ import {
   updateMemberRole,
   fetchOrgLoads,
   fetchOrgRecentLoads,
+  fetchDispatcherLoads,
   updateOrganizationName,
   aggregateDispatcherStats,
+  orgDailySeries,
+  topLanes,
 } from './organizations.js';
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
@@ -162,6 +166,7 @@ const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
 // ─── Load History State ─────────────────────────────────────────────────────
 
 let currentLoadId = null; // DB id of the load currently being edited (null = new/unsaved)
+let currentLoadOutcome = 'pending'; // outcome of that load, so a resolved one isn't re-asked
 let loadsList = []; // cached history rows for the panel
 let showCompleted = false; // history panel filter
 let editSaveTimer = null; // debounced autosave-on-edit timer
@@ -185,6 +190,8 @@ let adminSection = 'overview'; // overview | team | activity | settings
 let adminLoads = []; // aggregate rows (user_id/status/created_at) for the org
 let adminRecentLoads = []; // detailed recent tail, for the activity feed
 let adminActivityFilter = 'all'; // 'all' | a dispatcher user_id
+let adminDispatcherId = null; // whose report is open, null when none
+let adminDispatcherLoads = []; // that dispatcher's loads, fetched on demand
 let adminCreateInFlight = false; // guards against a double-submit minting two accounts
 let adminCredentials = null; // { email, password } — the only copy, held for the copy button
 const MODE_STORAGE_KEY = 'loadform.appMode';
@@ -317,6 +324,19 @@ const els = {
   adminCredentialsDismiss: document.getElementById('admin-credentials-dismiss'),
   adminRoster: document.getElementById('admin-roster'),
   adminSeatSummary: document.getElementById('admin-seat-summary'),
+  adminTrend: document.getElementById('admin-trend'),
+  // Admin console — one dispatcher's report
+  adminDispatcherBack: document.getElementById('admin-dispatcher-back'),
+  adminDispatcherName: document.getElementById('admin-dispatcher-name'),
+  adminDispatcherSub: document.getElementById('admin-dispatcher-sub'),
+  adminDispatcherActions: document.getElementById('admin-dispatcher-actions'),
+  adminDispatcherKpis: document.getElementById('admin-dispatcher-kpis'),
+  adminDispatcherTrend: document.getElementById('admin-dispatcher-trend'),
+  adminDispatcherOutcomes: document.getElementById('admin-dispatcher-outcomes'),
+  adminDispatcherLanes: document.getElementById('admin-dispatcher-lanes'),
+  adminDispatcherLoads: document.getElementById('admin-dispatcher-loads'),
+  adminDispatcherLoadsEmpty: document.getElementById('admin-dispatcher-loads-empty'),
+  adminDispatcherLoadCount: document.getElementById('admin-dispatcher-load-count'),
   // Admin console — activity
   adminActivityList: document.getElementById('admin-activity-list'),
   adminActivityEmpty: document.getElementById('admin-activity-empty'),
@@ -328,6 +348,9 @@ const els = {
   adminBillingPreview: document.getElementById('admin-billing-preview'),
   adminMembershipNote: document.getElementById('admin-membership-note'),
   adminLeaveBtn: document.getElementById('admin-leave-btn'),
+  // Outcome prompt
+  outcomeModal: document.getElementById('outcome-modal'),
+  outcomeLane: document.getElementById('outcome-lane'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -373,6 +396,7 @@ const FIELDS = [
   { key: 'commodity', label: 'Commodity', icon: 'package', placeholder: 'e.g. Frozen chicken' },
   { key: 'equipment_type', label: 'Equipment Type', icon: 'truck', placeholder: 'e.g. Reefer, Dry Van' },
   { key: 'rate', label: 'Rate', icon: 'dollar-sign', placeholder: 'e.g. $2.80/mile ($2,100 total)' },
+  { key: 'miles', label: 'Miles', icon: 'route', placeholder: 'e.g. 840' },
   { key: 'weight', label: 'Weight', icon: 'weight', placeholder: 'e.g. 43,000 lbs' },
   { key: 'trailer_instructions', label: 'Trailer Instructions', icon: 'list', placeholder: 'e.g. Pick empty → live load' },
   { key: 'additional_notes', label: 'Additional Notes', icon: 'sticky-note', placeholder: 'e.g. Lumpers required' },
@@ -684,6 +708,7 @@ function enterListeningUI() {
   currentExtractedData = null;
   currentConfidence = {};
   currentLoadId = null; // a new capture session starts a fresh load
+  currentLoadOutcome = 'pending';
   els.liveTranscript.innerHTML = '';
   renderEmptyFieldCards(); // reset cards to empty placeholders
   els.outputPreview.textContent = '';
@@ -1021,11 +1046,62 @@ async function writeTextToClipboard(text) {
 // "New Load": persist any final edits to the current load, then start fresh.
 async function handleNewLoad() {
   if (currentExtractedData && currentUser) {
-    await saveCurrentLoad();
+    // Only ask about loads that are still open. Re-opening a resolved load to
+    // fix a typo and being re-interrogated about it teaches dispatchers to
+    // dismiss the dialog reflexively.
+    const outcome = currentLoadOutcome === 'pending' ? await askLoadOutcome() : null;
+    await saveCurrentLoad(outcome);
   }
   currentLoadId = null;
+  currentLoadOutcome = 'pending';
   resetForm();
   refreshLoadsList();
+}
+
+/**
+ * Ask how the load ended. Resolves to 'booked' | 'lost' | 'pending'.
+ *
+ * Escape and a backdrop click resolve to 'pending' rather than cancelling the
+ * save: the dispatcher's next load is what they actually care about, and
+ * blocking that on an answer they may not have would make the prompt something
+ * to route around.
+ */
+function askLoadOutcome() {
+  return new Promise((resolve) => {
+    const lane = [
+      currentExtractedData?.pickup_location,
+      currentExtractedData?.delivery_location,
+    ]
+      .filter(Boolean)
+      .join(' → ');
+    els.outcomeLane.textContent = lane || 'This load';
+
+    const finish = (outcome) => {
+      els.outcomeModal.removeEventListener('click', onClick);
+      document.removeEventListener('keydown', onKey, true);
+      els.outcomeModal.classList.add('hidden');
+      resolve(outcome);
+    };
+
+    const onClick = (e) => {
+      const btn = e.target.closest('[data-outcome]');
+      if (btn) return finish(btn.dataset.outcome);
+      if (e.target === els.outcomeModal) finish('pending');
+    };
+
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        // Captured, so this dialog claims Escape ahead of anything a future
+        // global handler might do with it while the prompt is open.
+        e.stopPropagation();
+        finish('pending');
+      }
+    };
+
+    els.outcomeModal.addEventListener('click', onClick);
+    document.addEventListener('keydown', onKey, true);
+    els.outcomeModal.classList.remove('hidden');
+  });
 }
 
 function resetForm() {
@@ -1068,7 +1144,7 @@ function resetForm() {
 // Persist the current in-memory load to Supabase. Inserts a new row when there
 // is no currentLoadId (first save), otherwise updates the existing row.
 // Never throws — a save failure is logged but does not block the UI.
-async function saveCurrentLoad() {
+async function saveCurrentLoad(outcome = null) {
   if (!currentUser || !currentExtractedData) return;
   const { id } = await saveLoad(
     supabase,
@@ -1077,11 +1153,13 @@ async function saveCurrentLoad() {
     currentExtractedData,
     currentConfidence,
     accumulatedTranscript,
-    currentMembership?.org_id
+    currentMembership?.org_id,
+    outcome
   );
   if (id && !currentLoadId) {
     currentLoadId = id;
   }
+  if (outcome) currentLoadOutcome = outcome;
   refreshLoadsList();
 }
 
@@ -1167,6 +1245,7 @@ function renderLoadsList() {
         <div class="lf-load-sub">${escapeHtml(meta)}</div>
       </div>
       <div class="lf-load-actions">
+        ${outcomeControl(load)}
         <span class="lf-pill text-xs px-2 py-0.5 rounded-full ${isDone ? 'lf-status-done' : 'lf-status-active'}">
           ${isDone ? '✓ Done' : 'Active'}
         </span>
@@ -1180,20 +1259,49 @@ function renderLoadsList() {
   }
 }
 
+/**
+ * The outcome cell on a history row.
+ *
+ * An unresolved load gets the two answers as buttons, because "not yet" has to
+ * have somewhere to land later — otherwise pending piles up and the booking
+ * rate never becomes worth reading. A resolved one collapses to a single tag
+ * that flips back to the buttons when clicked, so a mistake is one tap to fix
+ * without the row carrying three controls forever.
+ */
+function outcomeControl(load) {
+  const outcome = load.outcome || 'pending';
+  if (outcome === 'pending') {
+    return `
+      <span class="lf-outcome-set">
+        <button class="lf-outcome-btn is-booked" data-load-id="${load.id}" data-outcome="booked" title="We booked this load">Booked</button>
+        <button class="lf-outcome-btn is-lost" data-load-id="${load.id}" data-outcome="lost" title="We didn't get this load">Lost</button>
+      </span>`;
+  }
+  const booked = outcome === 'booked';
+  return `<button
+    class="lf-outcome-tag ${booked ? 'is-booked' : 'is-lost'}"
+    data-load-id="${load.id}"
+    data-outcome="pending"
+    title="Change — reopens this load as unresolved"
+  >${booked ? '✓ Booked' : 'Lost'}</button>`;
+}
+
 // Open a saved load into the form/output for review or further editing.
 async function openLoad(id) {
   const load = await fetchLoad(supabase, id);
   if (!load) return;
 
   currentLoadId = load.id;
+  currentLoadOutcome = load.outcome || 'pending';
   currentExtractedData = {};
   for (const key of [
     'pickup_location', 'pickup_datetime', 'pickup_type', 'pickup_window',
     'delivery_location', 'delivery_datetime', 'delivery_type', 'delivery_window',
     'stops', 'commodity', 'equipment_type', 'trailer_instructions',
-    'rate', 'weight', 'additional_notes',
+    'rate', 'miles', 'weight', 'additional_notes',
   ]) {
-    currentExtractedData[key] = load[key] || '';
+    // `miles` comes back as an integer; every field here is edited as text.
+    currentExtractedData[key] = load[key] == null ? '' : String(load[key]);
   }
   currentConfidence = load.confidence || {};
   accumulatedTranscript = load.transcript || '';
@@ -1231,6 +1339,17 @@ async function toggleLoadStatus(id) {
   await refreshLoadsList();
 }
 
+/** Record (or reopen) a load's outcome from the history panel. */
+async function changeLoadOutcome(id, outcome) {
+  const ok = await setLoadOutcome(supabase, id, outcome);
+  if (!ok) return;
+  // Keep the open load's state in step, so starting the next one doesn't
+  // re-ask about a load just answered here — or skip asking about one just
+  // reopened.
+  if (id === currentLoadId) currentLoadOutcome = outcome;
+  await refreshLoadsList();
+}
+
 // Delete a load (with confirm). If it's the currently-open one, reset the form.
 async function removeLoad(id) {
   if (!confirm('Delete this load? This cannot be undone.')) return;
@@ -1238,6 +1357,7 @@ async function removeLoad(id) {
   if (!ok) return;
   if (id === currentLoadId) {
     currentLoadId = null;
+    currentLoadOutcome = 'pending';
     resetForm();
   }
   await refreshLoadsList();
@@ -1245,6 +1365,12 @@ async function removeLoad(id) {
 
 // Handle clicks anywhere in the history list via delegation.
 function onHistoryListClick(e) {
+  const outcomeBtn = e.target.closest('[data-outcome]');
+  if (outcomeBtn) {
+    changeLoadOutcome(outcomeBtn.dataset.loadId, outcomeBtn.dataset.outcome);
+    return;
+  }
+
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const id = btn.dataset.loadId;
@@ -1812,6 +1938,10 @@ const ADMIN_SECTIONS = {
   team: { title: 'Team', sub: 'Add dispatchers and manage who can do what.' },
   activity: { title: 'Activity', sub: 'Every load your dispatchers have captured.' },
   settings: { title: 'Settings', sub: 'Organization name, seats, and billing.' },
+  // Reached by clicking a person, never from the sidebar — it has no meaning
+  // without one selected, so there is no [data-admin-section] button for it.
+  // Both strings are replaced with the dispatcher's own when it opens.
+  dispatcher: { title: 'Dispatcher', sub: '' },
 };
 
 function showAdminError(message) {
@@ -1830,8 +1960,17 @@ function setAdminSection(section) {
   // Credentials are shown once, in context. Navigating away is the admin saying
   // they're done with them.
   hideAdminCredentials();
+  // Leaving the dispatcher page drops the person it was about, so returning to
+  // it can't repaint a stale report.
+  if (section !== 'dispatcher') {
+    adminDispatcherId = null;
+    adminDispatcherLoads = [];
+  }
   for (const btn of document.querySelectorAll('[data-admin-section]')) {
-    btn.classList.toggle('is-active', btn.dataset.adminSection === section);
+    // The dispatcher page hangs off Overview, so that nav item stays lit while
+    // you're inside it — nothing in the sidebar should look deselected.
+    const target = section === 'dispatcher' ? 'overview' : section;
+    btn.classList.toggle('is-active', btn.dataset.adminSection === target);
   }
   for (const key of Object.keys(ADMIN_SECTIONS)) {
     const panel = document.getElementById(`admin-panel-${key}`);
@@ -1869,52 +2008,206 @@ function renderAdminConsole() {
   renderAdminTeam();
   renderAdminActivity(stats);
   renderAdminSettings();
+  if (adminDispatcherId) renderAdminDispatcher();
 }
 
-function kpiTile(label, value) {
+function kpiTile(label, value, note = '') {
   return `<div class="lf-kpi">
     <p class="lf-kpi-value">${escapeHtml(String(value))}</p>
     <p class="lf-kpi-label">${escapeHtml(label)}</p>
+    ${note ? `<p class="lf-kpi-note">${escapeHtml(note)}</p>` : ''}
   </div>`;
+}
+
+// ─── Number formatting ──────────────────────────────────────────────────────
+//
+// Every one of these renders "not known yet" as an em dash rather than a zero.
+// For the first weeks after outcome capture ships, most of these values are
+// genuinely absent, and "$0" or "0%" would read as a dispatcher performing
+// terribly instead of as a question nobody has answered.
+
+const NO_VALUE = '—';
+
+function formatMoney(value, { compact = false } = {}) {
+  if (!Number.isFinite(value) || value <= 0) return NO_VALUE;
+  if (compact && value >= 1000) {
+    return `$${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
+  }
+  return `$${Math.round(value).toLocaleString()}`;
+}
+
+function formatRatePerMile(value) {
+  if (!Number.isFinite(value) || value <= 0) return NO_VALUE;
+  return `$${value.toFixed(2)}`;
+}
+
+/**
+ * Booking rate as "1 in 3" rather than "33%".
+ *
+ * Carrier-side dispatchers call several brokers to cover one truck, so the
+ * honest percentages here are low ones. "1 in 3" states the same fact without
+ * looking like a failing grade, and matches how dispatchers talk about it.
+ */
+function formatBookingRate(rate) {
+  if (rate === null || !Number.isFinite(rate)) return NO_VALUE;
+  if (rate <= 0) return '0 so far';
+  if (rate >= 1) return 'all booked';
+  return `1 in ${(1 / rate).toFixed(1).replace(/\.0$/, '')}`;
+}
+
+function formatRelativeDay(ms) {
+  if (!ms) return 'No loads yet';
+  const days = Math.floor((Date.now() - ms) / (24 * 60 * 60 * 1000));
+  if (days <= 0) return 'Today';
+  if (days === 1) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  return formatAdminDate(new Date(ms).toISOString());
+}
+
+// ─── Charts ─────────────────────────────────────────────────────────────────
+//
+// Hand-rolled inline SVG rather than a charting dependency: all three forms
+// here are single-series, so there is no categorical palette to manage and no
+// axis machinery worth 100kB. Each follows the same specs — 2px lines, ≤24px
+// columns with a 4px rounded cap, hairline solid gridlines, one hue.
+//
+// One hue is not a stylistic choice: a value-ramp across nominal categories
+// (a darker bar because it's a taller bar) double-encodes length as color and
+// spends the only free channel on information the chart already carries.
+
+const CHART_HUE = 'var(--lf-primary)';
+
+/**
+ * A sparkline: shape only, no axes, no labels.
+ *
+ * Read as texture rather than as data — it answers "did this person go quiet
+ * on Thursday" at a glance. Anything precise belongs to the number beside it.
+ */
+function sparkline(series, { width = 84, height = 24 } = {}) {
+  // A dispatcher with nothing yet gets no mark at all. A flat line along the
+  // baseline draws the eye like a plotted value and reads as "flatlined"
+  // rather than "hasn't started", which is a different and unfair claim.
+  if (!series.some(Boolean)) return '';
+  const max = Math.max(...series, 1);
+  const n = series.length;
+  const step = width / Math.max(n - 1, 1);
+  const y = (v) => height - 2 - (v / max) * (height - 4);
+  const points = series.map((v, i) => `${(i * step).toFixed(1)},${y(v).toFixed(1)}`);
+
+  const last = series[n - 1];
+  return `<svg class="lf-spark" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}"
+    role="img" aria-label="Loads per day over the last ${n} days">
+    <polyline points="${points.join(' ')}" fill="none" stroke="${CHART_HUE}"
+      stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85" />
+    <circle cx="${(width - 0).toFixed(1)}" cy="${y(last).toFixed(1)}" r="2.5"
+      fill="${CHART_HUE}" />
+  </svg>`;
+}
+
+/**
+ * Loads per day as a column chart.
+ *
+ * Columns rather than a line because these are counts of discrete events, and
+ * at this volume most days are small integers — a line through 0,1,0,2 implies
+ * a continuity that isn't there.
+ */
+function columnChart(series, { height = 120, label = 'Loads per day' } = {}) {
+  const n = series.length;
+  const max = Math.max(...series, 1);
+  // Round the axis top to something a reader can hold in their head.
+  const top = max <= 4 ? max : Math.ceil(max / 5) * 5;
+
+  // Laid out as flex columns rather than SVG rects so the ≤24px cap and the
+  // rounded cap are plain CSS. In SVG both would be percentage arithmetic
+  // against the container width, which silently stops meaning pixels.
+  const bars = series
+    .map((v, i) => {
+      const h = (v / top) * 100;
+      const title = `${v} load${v === 1 ? '' : 's'} · ${dayLabel(n - 1 - i)}`;
+      return `<span class="lf-col-slot" title="${escapeHtml(title)}">
+        <span class="lf-col${v === 0 ? ' is-empty' : ''}" style="height:${h.toFixed(2)}%"></span>
+      </span>`;
+    })
+    .join('');
+
+  return `
+    <div class="lf-chart" style="--lf-chart-h:${height}px">
+      <div class="lf-chart-plot" role="img" aria-label="${escapeHtml(label)}">
+        <span class="lf-gridline" style="top:0"></span>
+        <span class="lf-gridline" style="top:50%"></span>
+        <span class="lf-chart-cols">${bars}</span>
+      </div>
+      <div class="lf-chart-axis">
+        <span>${dayLabel(n - 1)}</span>
+        <span class="lf-chart-axis-max">${top} max</span>
+        <span>Today</span>
+      </div>
+    </div>`;
+}
+
+function dayLabel(daysAgo) {
+  const d = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function renderAdminOverview(stats) {
   const activeMembers = orgRoster.filter((m) => m.status === 'active');
+  const booked7d = stats.reduce((sum, s) => sum + s.booked7d, 0);
+  const revenue30d = stats.reduce((sum, s) => sum + s.revenue30d, 0);
+  const orgMiles = stats.reduce((sum, s) => sum + s.milesTotal, 0);
+  const orgRevenueWithMiles = stats.reduce((sum, s) => sum + s.revenueWithMiles, 0);
+  const orgRatePerMile = orgMiles > 0 ? orgRevenueWithMiles / orgMiles : null;
   const last7dTotal = stats.reduce((sum, s) => sum + s.last7d, 0);
-  const completed = stats.reduce((sum, s) => sum + s.completed, 0);
 
+  // Booked and revenue lead, because they are the two an owner runs the
+  // business on. Calls captured is context for them, not a headline of its own.
   els.adminKpis.innerHTML =
-    kpiTile('Loads captured', adminLoads.length) +
-    kpiTile('Last 7 days', last7dTotal) +
-    kpiTile('Completed', completed) +
+    kpiTile('Booked, last 7d', booked7d || NO_VALUE, `${last7dTotal} calls captured`) +
+    kpiTile('Revenue booked, 30d', formatMoney(revenue30d, { compact: true })) +
+    kpiTile('Avg rate per mile', formatRatePerMile(orgRatePerMile)) +
     kpiTile('Active dispatchers', activeMembers.length);
 
   els.adminTeamCount.textContent = activeMembers.length || '';
   els.adminStatsEmpty.classList.toggle('hidden', adminLoads.length > 0);
+
+  renderOrgTrend();
+  renderAdminStatsTable(stats);
+}
+
+function renderOrgTrend() {
+  if (!els.adminTrend) return;
+  const series = orgDailySeries(adminLoads, 30);
+  const total = series.reduce((a, b) => a + b, 0);
+  els.adminTrend.innerHTML = total
+    ? columnChart(series, { height: 120, label: 'Loads captured per day, last 30 days' })
+    : '<p class="text-sm text-slate-500 text-center py-8">No loads captured in the last 30 days.</p>';
+}
+
+function renderAdminStatsTable(stats) {
   els.adminStatsBody.innerHTML = '';
 
-  // Share bars are relative to the busiest dispatcher, not to the org total —
-  // with a handful of dispatchers, share-of-total bars are all too short to
-  // compare at a glance.
-  const busiest = stats.reduce((max, s) => Math.max(max, s.total), 0);
-
   for (const s of stats) {
-    const pct = busiest > 0 ? Math.round((s.total / busiest) * 100) : 0;
     const row = document.createElement('tr');
-    row.className = 'border-b border-white/5 last:border-0';
+    row.className = 'border-b border-white/5 last:border-0 lf-stats-row';
+    // A departed member has no profile to open — their bucket is an aggregate
+    // of several possible people, not an account.
+    if (s.role) {
+      row.dataset.dispatcherId = s.userId;
+      row.tabIndex = 0;
+      row.setAttribute('role', 'button');
+      row.title = `Open ${s.email}`;
+    }
     row.innerHTML = `
       <td class="py-2.5 pr-3 text-slate-200">
-        ${escapeHtml(s.email)}
+        <span class="lf-stats-name">${escapeHtml(s.email)}</span>
         ${s.role ? `<span class="lf-admin-tag ml-1.5${s.role === 'owner' ? ' is-owner' : ''}">${escapeHtml(s.role)}</span>` : '<span class="lf-admin-tag ml-1.5">left org</span>'}
       </td>
-      <td class="py-2.5 text-right text-white font-medium tabular-nums">${s.total}</td>
-      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.last7d}</td>
-      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.last30d}</td>
-      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.active}</td>
-      <td class="py-2.5 text-right text-slate-300 tabular-nums">${s.completed}</td>
-      <td class="py-2.5 pl-3">
-        <div class="lf-share-track"><div class="lf-share-fill" style="width:${pct}%"></div></div>
-      </td>`;
+      <td class="py-2.5 px-3 text-right text-white font-medium tabular-nums">${s.booked || NO_VALUE}</td>
+      <td class="py-2.5 px-3 text-right text-slate-300 tabular-nums">${formatBookingRate(s.bookingRate)}</td>
+      <td class="py-2.5 px-3 text-right text-slate-300 tabular-nums">${formatMoney(s.revenue, { compact: true })}</td>
+      <td class="py-2.5 px-3 text-right text-slate-300 tabular-nums">${formatRatePerMile(s.ratePerMile)}</td>
+      <td class="py-2.5 px-3 text-right text-slate-400 tabular-nums">${s.total}</td>
+      <td class="py-2.5 pl-3 text-right">${sparkline(s.daily)}</td>`;
     els.adminStatsBody.appendChild(row);
   }
 }
@@ -1942,9 +2235,15 @@ function renderAdminTeam() {
 
     const row = document.createElement('div');
     row.className = 'lf-admin-row';
+    // A pending invite has no user_id yet, so there is nothing to report on.
+    const nameCell =
+      !isPending && member.user_id
+        ? `<button type="button" class="lf-stats-name text-left" data-dispatcher-id="${member.user_id}" title="Open their report">${escapeHtml(member.invited_email)}</button>`
+        : `<span class="text-sm text-slate-200 truncate">${escapeHtml(member.invited_email)}</span>`;
+
     row.innerHTML = `
       <span class="flex-1 min-w-0">
-        <span class="block text-sm text-slate-200 truncate">${escapeHtml(member.invited_email)}</span>
+        <span class="block truncate">${nameCell}</span>
         <span class="block text-xs text-slate-500 mt-0.5">
           ${isPending ? 'Invitation sent — not yet accepted' : `Joined ${formatAdminDate(member.accepted_at || member.created_at)}`}
         </span>
@@ -2000,6 +2299,176 @@ function renderAdminActivity(stats) {
       <span class="text-xs text-slate-600 shrink-0 tabular-nums">${escapeHtml(formatAdminDate(load.created_at))}</span>`;
     els.adminActivityList.appendChild(row);
   }
+}
+
+// ─── One dispatcher's report ────────────────────────────────────────────────
+
+/**
+ * Open a dispatcher's page.
+ *
+ * Their loads are fetched on demand rather than held for every member up
+ * front: the overview needs only aggregates, and pulling full load detail for
+ * the whole org to service a page that shows one person would grow with the
+ * team for no benefit.
+ */
+async function openDispatcher(userId) {
+  if (!isOrgAdmin() || !userId) return;
+  adminDispatcherId = userId;
+  adminDispatcherLoads = [];
+  setAdminSection('dispatcher');
+  renderAdminDispatcher(); // paint the header immediately, from cached aggregates
+  adminDispatcherLoads = await fetchDispatcherLoads(
+    supabase,
+    currentMembership.org_id,
+    userId
+  );
+  // Guard against a second dispatcher being opened while this fetch was in
+  // flight — the slower response must not overwrite the newer page.
+  if (adminDispatcherId !== userId) return;
+  renderAdminDispatcher();
+}
+
+function renderAdminDispatcher() {
+  if (!adminDispatcherId) return;
+  const stats = aggregateDispatcherStats(adminLoads, orgRoster);
+  const s = stats.find((x) => x.userId === adminDispatcherId);
+  const member = orgRoster.find((m) => m.user_id === adminDispatcherId);
+  if (!s) return;
+
+  els.adminDispatcherName.textContent = s.email;
+  els.adminSectionTitle.textContent = s.email;
+  els.adminSectionSub.textContent = 'Everything this dispatcher has captured.';
+  els.adminDispatcherSub.textContent = [
+    s.role ? s.role[0].toUpperCase() + s.role.slice(1) : 'Former member',
+    member?.accepted_at ? `joined ${formatAdminDate(member.accepted_at)}` : null,
+    `last load ${formatRelativeDay(s.lastActiveAt).toLowerCase()}`,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  renderDispatcherActions(member);
+
+  els.adminDispatcherKpis.innerHTML =
+    kpiTile('Booked', s.booked || NO_VALUE, `of ${s.total} calls`) +
+    kpiTile('Booking rate', formatBookingRate(s.bookingRate)) +
+    kpiTile('Revenue booked', formatMoney(s.revenue, { compact: true })) +
+    kpiTile('Avg rate per mile', formatRatePerMile(s.ratePerMile));
+
+  const series = orgDailySeries(
+    adminLoads.filter((l) => l.user_id === adminDispatcherId),
+    30
+  );
+  els.adminDispatcherTrend.innerHTML = series.some(Boolean)
+    ? columnChart(series, { height: 120, label: `Calls per day for ${s.email}` })
+    : '<p class="text-sm text-slate-500 text-center py-8">No calls in the last 30 days.</p>';
+
+  // Status colors, so each tile carries its label — the emerald/gray pair sits
+  // close enough under deuteranopia that color alone would not separate them.
+  els.adminDispatcherOutcomes.innerHTML =
+    outcomeTile('Booked', s.booked, 'is-booked') +
+    outcomeTile('Lost', s.lost, 'is-lost') +
+    outcomeTile('Still open', s.pending, 'is-pending');
+
+  renderDispatcherLanes();
+  renderDispatcherLoads();
+}
+
+function outcomeTile(label, value, cls) {
+  return `<div class="lf-outcome-tile ${cls}">
+    <p class="lf-outcome-tile-value">${value}</p>
+    <p class="lf-outcome-tile-label">${escapeHtml(label)}</p>
+  </div>`;
+}
+
+/**
+ * Per-person admin actions, moved here from the roster row.
+ *
+ * A roster row can hold two or three controls before it stops being scannable;
+ * this page has room to label them, which matters most for the password reset —
+ * the one action with a consequence the admin can't undo.
+ */
+function renderDispatcherActions(member) {
+  if (!member || member.role === 'owner' || member.status !== 'active') {
+    els.adminDispatcherActions.innerHTML = '';
+    return;
+  }
+  const canReset = !!member.provisioned_at;
+  els.adminDispatcherActions.innerHTML = `
+    ${
+      canReset
+        ? `<button type="button" class="lf-btn py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium" data-admin-action="reset-password" data-member-id="${member.id}">Reset password</button>`
+        : ''
+    }
+    <button type="button" class="lf-btn py-1.5 px-3 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-xs font-medium" data-admin-action="remove" data-member-id="${member.id}">Remove</button>`;
+}
+
+function renderDispatcherLanes() {
+  const lanes = topLanes(adminDispatcherLoads);
+  if (lanes.length === 0) {
+    els.adminDispatcherLanes.innerHTML =
+      '<p class="text-sm text-slate-500 py-2">No complete lanes captured yet.</p>';
+    return;
+  }
+  const busiest = lanes[0].count;
+  els.adminDispatcherLanes.innerHTML = lanes
+    .map(
+      (l) => `
+      <div>
+        <div class="flex items-baseline justify-between gap-3 mb-1">
+          <span class="text-sm text-slate-200 truncate">${escapeHtml(l.lane)}</span>
+          <span class="text-xs text-slate-500 tabular-nums shrink-0">${l.count}× · ${l.booked} booked</span>
+        </div>
+        <div class="lf-share-track"><div class="lf-share-fill" style="width:${Math.round((l.count / busiest) * 100)}%"></div></div>
+      </div>`
+    )
+    .join('');
+}
+
+function renderDispatcherLoads() {
+  const loads = adminDispatcherLoads;
+  els.adminDispatcherLoadCount.textContent = loads.length
+    ? `${loads.length} most recent`
+    : '';
+  els.adminDispatcherLoadsEmpty.classList.toggle('hidden', loads.length > 0);
+  els.adminDispatcherLoads.innerHTML = '';
+
+  for (const load of loads) {
+    const lane = [load.pickup_location, load.delivery_location].filter(Boolean).join(' → ');
+    const perMile =
+      Number(load.rate_usd) > 0 && Number(load.miles) > 0
+        ? `${formatRatePerMile(load.rate_usd / load.miles)}/mi`
+        : '';
+    const meta = [lane || 'No lane captured', load.equipment_type, load.miles ? `${load.miles} mi` : '']
+      .filter(Boolean)
+      .join(' · ');
+
+    const row = document.createElement('div');
+    row.className = 'lf-admin-row';
+    row.innerHTML = `
+      <span class="flex-1 min-w-0">
+        <span class="block text-sm text-slate-200 truncate">${escapeHtml(load.title || 'Untitled load')}</span>
+        <span class="block text-xs text-slate-500 mt-0.5 truncate">${escapeHtml(meta)}</span>
+      </span>
+      <span class="text-right shrink-0">
+        <span class="block text-sm text-slate-200 tabular-nums">${escapeHtml(load.rate || NO_VALUE)}</span>
+        ${perMile ? `<span class="block text-xs text-slate-500 tabular-nums">${escapeHtml(perMile)}</span>` : ''}
+      </span>
+      ${outcomeTag(load.outcome)}
+      <span class="text-xs text-slate-600 shrink-0 tabular-nums">${escapeHtml(formatAdminDate(load.created_at))}</span>`;
+    els.adminDispatcherLoads.appendChild(row);
+  }
+}
+
+/** Read-only outcome badge. Always carries its word — see the note on the
+ * outcome tiles about the emerald/gray pair under CVD. */
+function outcomeTag(outcome) {
+  const map = {
+    booked: ['is-booked', 'Booked'],
+    lost: ['is-lost', 'Lost'],
+    pending: ['is-pending', 'Open'],
+  };
+  const [cls, label] = map[outcome] || map.pending;
+  return `<span class="lf-admin-tag ${cls} shrink-0">${label}</span>`;
 }
 
 function renderAdminSettings() {
@@ -2144,6 +2613,12 @@ async function handleAdminResetPassword(memberId) {
 }
 
 async function handleAdminRosterClick(e) {
+  const name = e.target.closest('[data-dispatcher-id]');
+  if (name) {
+    openDispatcher(name.dataset.dispatcherId);
+    return;
+  }
+
   const btn = e.target.closest('[data-admin-action]');
   if (!btn) return;
   hideAdminError();
@@ -2185,6 +2660,14 @@ async function handlePostRosterMutation(memberId) {
     if (!isOrgAdmin()) return; // updateAdminEntryPoints already bounced us out
   }
   await refreshAdminConsole();
+  // Removing someone from their own report page leaves that page describing a
+  // member who no longer exists, so step back out to the list.
+  if (
+    adminDispatcherId &&
+    !orgRoster.some((m) => m.user_id === adminDispatcherId && m.status === 'active')
+  ) {
+    setAdminSection('overview');
+  }
 }
 
 async function handleAdminOrgNameSubmit(e) {
@@ -2226,6 +2709,7 @@ async function handleLogout() {
   localStorage.removeItem('sb-auth-token');
   currentUser = null;
   currentLoadId = null;
+  currentLoadOutcome = 'pending';
   loadsList = [];
   currentMembership = null;
   currentInvites = [];
@@ -2315,6 +2799,21 @@ window.addEventListener('DOMContentLoaded', () => {
   for (const btn of document.querySelectorAll('[data-admin-section]')) {
     btn.addEventListener('click', () => setAdminSection(btn.dataset.adminSection));
   }
+  // Opening a dispatcher's report: from the overview table, or from a name on
+  // the roster. Both delegate, since both bodies are re-rendered wholesale.
+  els.adminStatsBody.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-dispatcher-id]');
+    if (row) openDispatcher(row.dataset.dispatcherId);
+  });
+  els.adminStatsBody.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('[data-dispatcher-id]');
+    if (!row) return;
+    e.preventDefault(); // Space would otherwise scroll the panel
+    openDispatcher(row.dataset.dispatcherId);
+  });
+  els.adminDispatcherBack.addEventListener('click', () => setAdminSection('overview'));
+  els.adminDispatcherActions.addEventListener('click', handleAdminRosterClick);
   els.adminCreateMemberForm.addEventListener('submit', handleAdminCreateMemberSubmit);
   els.adminCredentialsCopy.addEventListener('click', handleAdminCredentialsCopy);
   els.adminCredentialsDismiss.addEventListener('click', hideAdminCredentials);

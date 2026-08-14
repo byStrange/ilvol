@@ -125,6 +125,11 @@ pub struct LoadFormData {
     pub trailer_instructions: String,
     #[serde(default)]
     pub rate: String,
+    /// Kept as a String like every other extracted field — the model returns
+    /// text and the merge logic treats all fields uniformly. It is parsed to an
+    /// integer only at the persistence boundary (see parseMiles in loads.js).
+    #[serde(default)]
+    pub miles: String,
     #[serde(default)]
     pub weight: String,
     #[serde(default)]
@@ -396,6 +401,7 @@ fn extraction_prompt(transcript: &str) -> String {
 - equipment_type: truck type (reefer, dry van, flatbed, step deck, conestoga, etc.)
 - trailer_instructions: full operation chain for drivers without trailers — e.g. "Pick empty nearby → live load → live unload", "Hook preloaded at shipper → drop and hook at receiver", "Empty in → live load → drop and hook"
 - rate: pay rate mentioned ($/mile or total amount)
+- miles: trip distance in miles, ONLY if a number of miles is actually stated on the call. Digits only, no unit — "840", not "840 miles". Never estimate the distance between the two cities yourself; leave it empty if nobody said it.
 - weight: load weight in lbs
 - additional_notes: any other relevant info (lumpers, appointments, hazmat, T-check, pallet jack, etc.)
 
@@ -433,6 +439,7 @@ come up so far — note that every field still under discussion is empty:
     "equipment_type": "",
     "trailer_instructions": "",
     "rate": "$2.80/mile",
+    "miles": "",
     "weight": "",
     "additional_notes": ""
   }},
@@ -450,6 +457,7 @@ come up so far — note that every field still under discussion is empty:
     "equipment_type": 0.0,
     "trailer_instructions": 0.0,
     "rate": 0.89,
+    "miles": 0.0,
     "weight": 0.0,
     "additional_notes": 0.0
   }}

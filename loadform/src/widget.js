@@ -37,7 +37,13 @@ function tauriListen(event, handler) {
 }
 
 // ─── Field metadata (mirrors src/main.js) ─────────────────────────────────
-
+//
+// One deliberate omission: `miles`. The orbit geometry below is solved for
+// exactly these 15 slots — a 16th tightens the angular spacing past the point
+// where neighbouring chips clear each other, and buying that back means a
+// wider ring or a narrower chip. Mileage is also the least glanceable field
+// here: it's a number for the dashboard, not one the dispatcher acts on
+// mid-call. It is still captured and still shows on the main form.
 const FIELDS = [
   { key: 'pickup_location', label: 'Pickup', icon: 'map-pin' },
   { key: 'pickup_datetime', label: 'PU Time', icon: 'calendar' },

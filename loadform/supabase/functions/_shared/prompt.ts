@@ -21,6 +21,7 @@ export const FIELDS = [
   'equipment_type',
   'trailer_instructions',
   'rate',
+  'miles',
   'weight',
   'additional_notes',
 ] as const;
@@ -42,6 +43,7 @@ export function buildPrompt(transcript: string): string {
 - equipment_type: truck type (reefer, dry van, flatbed, step deck, conestoga, etc.)
 - trailer_instructions: full operation chain for drivers without trailers — e.g. "Pick empty nearby → live load → live unload", "Hook preloaded at shipper → drop and hook at receiver", "Empty in → live load → drop and hook"
 - rate: pay rate mentioned ($/mile or total amount)
+- miles: trip distance in miles, ONLY if a number of miles is actually stated on the call. Digits only, no unit — "840", not "840 miles". Never estimate the distance between the two cities yourself; leave it empty if nobody said it.
 - weight: load weight in lbs
 - additional_notes: any other relevant info (lumpers, appointments, hazmat, T-check, pallet jack, etc.)
 
@@ -59,18 +61,6 @@ ${FIELDS.map((f) => `    "${f}": 0.9`).join(',\n')}
 Transcript:
 ${transcript}`;
 }
-
-console.log(buildPrompt(`**Dispatcher**: Calling about 53ft dry van pick Chicago IL drop Atlanta GA. Load 45678. Still available?
-
-**Broker**: Available. Rate two thousand two hundred dollars. Full truckload.
-
-**Dispatcher**: Too low. Market average high. Need two thousand four hundred dollars. Deadhead twenty miles.
-
-**Broker**: Max authority two thousand three hundred dollars. Shipper strict on budget.
-
-**Dispatcher**: Two thousand three hundred fifty dollars. Meet middle. Driver ready immediate dispatch.
-
-**Broker**: Deal. Send MC number, insurance certificate, driver phone. Rate confirmation coming now.`))
 
 /** The model may wrap its JSON in markdown fences despite instructions. */
 export function stripFences(raw: string): string {

@@ -158,7 +158,7 @@ export async function fetchOrgLoads(supabase, orgId) {
   if (!supabase || !orgId) return [];
   const { data, error } = await supabase
     .from('loads')
-    .select('user_id, status, created_at')
+    .select('user_id, status, outcome, rate_usd, miles, created_at')
     .eq('org_id', orgId);
   if (error) {
     console.error('fetchOrgLoads failed:', error);
@@ -200,58 +200,204 @@ export async function updateOrganizationName(supabase, orgId, name) {
   return { ok: true };
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Days of per-day history each dispatcher row carries, for its sparkline. */
+export const SPARK_DAYS = 14;
+
+/** Local midnight for a timestamp, as the key the daily buckets are counted on.
+ * Local rather than UTC because a dispatcher's "yesterday" is their own. */
+function dayIndex(value, now) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+  const startOfDay = new Date(d);
+  startOfDay.setHours(0, 0, 0, 0);
+  return Math.round((startOfToday - startOfDay) / DAY_MS);
+}
+
+function emptyStat(userId, email, role) {
+  return {
+    userId,
+    email,
+    role,
+    total: 0,
+    last7d: 0,
+    last30d: 0,
+    active: 0,
+    completed: 0,
+    booked: 0,
+    lost: 0,
+    pending: 0,
+    booked7d: 0,
+    // Revenue and mileage accumulate over booked loads only — see the note on
+    // the derived fields below.
+    revenue: 0,
+    revenue30d: 0,
+    milesTotal: 0,
+    revenueWithMiles: 0,
+    daily: new Array(SPARK_DAYS).fill(0),
+    lastActiveAt: null,
+  };
+}
+
 /**
- * Roll raw org loads up into one row of stats per dispatcher: total loads,
- * loads in the last 7/30 days, and active/completed counts. Members with no
- * loads yet still appear (at zero); loads from a dispatcher who has since
- * left the org are grouped under a synthetic "former member" bucket instead
- * of being dropped, so historical activity isn't silently lost from view.
+ * Roll raw org loads up into one row per dispatcher.
+ *
+ * Three of the derived numbers have definitions worth stating, because each
+ * could reasonably have been computed another way:
+ *
+ *   bookingRate   booked / (booked + lost). Pending is excluded from the
+ *                 denominator, not counted as a loss — an unresolved load is
+ *                 not yet a failure, and treating it as one would punish the
+ *                 dispatcher with the most irons in the fire.
+ *
+ *   revenue       summed over BOOKED loads only. Revenue booked, not revenue
+ *                 quoted; a rate discussed on a load that got away is not money.
+ *
+ *   ratePerMile   total booked revenue ÷ total booked miles, over the loads
+ *                 that have both. A weighted average, deliberately not the mean
+ *                 of each load's per-mile figure: the latter lets a 90-mile
+ *                 drayage run at $4/mi outweigh a 1,200-mile haul at $2.40.
+ *
+ * Members with no loads still appear at zero; loads from someone who has since
+ * left are grouped under a synthetic "former member" bucket rather than
+ * dropped, so historical activity isn't silently lost from the org total.
  */
 export function aggregateDispatcherStats(loads, members) {
-  const DAY_MS = 24 * 60 * 60 * 1000;
   const now = Date.now();
   const byUser = new Map();
 
   for (const m of members) {
     if (m.status !== 'active' || !m.user_id) continue;
-    byUser.set(m.user_id, {
-      userId: m.user_id,
-      email: m.invited_email,
-      role: m.role,
-      total: 0,
-      last7d: 0,
-      last30d: 0,
-      active: 0,
-      completed: 0,
-    });
+    byUser.set(m.user_id, emptyStat(m.user_id, m.invited_email, m.role));
   }
 
   for (const load of loads || []) {
     let stat = byUser.get(load.user_id);
     if (!stat) {
       const key = `former:${load.user_id}`;
-      stat = byUser.get(key);
-      if (!stat) {
-        stat = {
-          userId: load.user_id,
-          email: 'Former member',
-          role: null,
-          total: 0,
-          last7d: 0,
-          last30d: 0,
-          active: 0,
-          completed: 0,
-        };
-        byUser.set(key, stat);
-      }
+      stat = byUser.get(key) || emptyStat(load.user_id, 'Former member', null);
+      byUser.set(key, stat);
     }
+
     stat.total += 1;
-    const ageMs = now - new Date(load.created_at).getTime();
+    const createdMs = new Date(load.created_at).getTime();
+    const ageMs = now - createdMs;
     if (ageMs <= 7 * DAY_MS) stat.last7d += 1;
     if (ageMs <= 30 * DAY_MS) stat.last30d += 1;
     if (load.status === 'completed') stat.completed += 1;
     else stat.active += 1;
+
+    if (!stat.lastActiveAt || createdMs > stat.lastActiveAt) {
+      stat.lastActiveAt = createdMs;
+    }
+
+    const day = dayIndex(load.created_at, now);
+    if (day !== null && day >= 0 && day < SPARK_DAYS) {
+      // Index 0 is the oldest day, so the sparkline reads left-to-right in time.
+      stat.daily[SPARK_DAYS - 1 - day] += 1;
+    }
+
+    const outcome = load.outcome || 'pending';
+    if (outcome === 'booked') stat.booked += 1;
+    else if (outcome === 'lost') stat.lost += 1;
+    else stat.pending += 1;
+
+    if (outcome !== 'booked') continue;
+    if (ageMs <= 7 * DAY_MS) stat.booked7d += 1;
+
+    const rate = Number(load.rate_usd);
+    if (Number.isFinite(rate) && rate > 0) {
+      stat.revenue += rate;
+      if (ageMs <= 30 * DAY_MS) stat.revenue30d += rate;
+      const miles = Number(load.miles);
+      if (Number.isFinite(miles) && miles > 0) {
+        stat.milesTotal += miles;
+        stat.revenueWithMiles += rate;
+      }
+    }
+  }
+
+  for (const stat of byUser.values()) {
+    const resolved = stat.booked + stat.lost;
+    // Null, never 0, when nothing has been resolved yet: "no answer" and "never
+    // wins a load" must not render as the same number.
+    stat.bookingRate = resolved > 0 ? stat.booked / resolved : null;
+    stat.ratePerMile =
+      stat.milesTotal > 0 ? stat.revenueWithMiles / stat.milesTotal : null;
   }
 
   return Array.from(byUser.values()).sort((a, b) => b.total - a.total);
+}
+
+/**
+ * Org-wide loads per day, oldest first, for the overview trend.
+ *
+ * Aggregated across everyone on purpose: a single dispatcher's daily count is
+ * too jagged at this team size to read as a trend, while the org total has
+ * enough volume to show a real shape.
+ */
+export function orgDailySeries(loads, days = 30) {
+  const now = Date.now();
+  const series = new Array(days).fill(0);
+  for (const load of loads || []) {
+    const day = dayIndex(load.created_at, now);
+    if (day !== null && day >= 0 && day < days) series[days - 1 - day] += 1;
+  }
+  return series;
+}
+
+/**
+ * The lanes a dispatcher runs most, busiest first.
+ *
+ * Cities are compared on their "City, ST" head so that "Amarillo, TX 79106" and
+ * "Amarillo, TX" are one lane rather than two.
+ */
+export function topLanes(loads, limit = 5) {
+  const counts = new Map();
+  for (const load of loads || []) {
+    const from = laneEnd(load.pickup_location);
+    const to = laneEnd(load.delivery_location);
+    if (!from || !to) continue;
+    const key = `${from} → ${to}`;
+    const entry = counts.get(key) || { lane: key, count: 0, booked: 0 };
+    entry.count += 1;
+    if (load.outcome === 'booked') entry.booked += 1;
+    counts.set(key, entry);
+  }
+  return Array.from(counts.values())
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+function laneEnd(location) {
+  const parts = String(location || '')
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  // "Amarillo, TX 79106" → "Amarillo, TX": keep the state, drop the zip.
+  return `${parts[0]}, ${parts[1].split(/\s+/)[0]}`;
+}
+
+/** One dispatcher's loads in full detail, newest first, for their profile. */
+export async function fetchDispatcherLoads(supabase, orgId, userId, limit = 100) {
+  if (!supabase || !orgId || !userId) return [];
+  const { data, error } = await supabase
+    .from('loads')
+    .select(
+      'id, title, status, outcome, rate, rate_usd, miles, pickup_location, delivery_location, equipment_type, commodity, created_at'
+    )
+    .eq('org_id', orgId)
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error('fetchDispatcherLoads failed:', error);
+    return [];
+  }
+  return data || [];
 }

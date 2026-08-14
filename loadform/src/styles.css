@@ -998,6 +998,70 @@ body {
   color: #fca5a5;
 }
 
+/* ─── Load outcome (booked / lost) ──────────────────────────────────────── */
+/*
+ * Quieter than the row's other actions on purpose. An unresolved load shows
+ * both answers side by side so recording one is a single tap, but neither is
+ * styled as the expected choice — a green "Booked" that outshines its
+ * neighbour is a thumb nudging the number this is meant to measure.
+ */
+
+.lf-outcome-set {
+  display: inline-flex;
+  border-radius: 0.6rem;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.lf-outcome-btn {
+  font-size: 0.72rem;
+  padding: 0.35rem 0.5rem;
+  background: rgba(51, 65, 85, 0.4);
+  color: var(--lf-muted-foreground);
+  cursor: pointer;
+  border: 0;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.lf-outcome-btn + .lf-outcome-btn {
+  border-left: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.lf-outcome-btn.is-booked:hover {
+  background: rgba(16, 185, 129, 0.2);
+  color: #6ee7b7;
+}
+
+.lf-outcome-btn.is-lost:hover {
+  background: rgba(148, 163, 184, 0.2);
+  color: #e2e8f0;
+}
+
+/* The resolved state: a tag, not a button, until you hover it. */
+.lf-outcome-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.6rem;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+
+.lf-outcome-tag:hover {
+  border-color: rgba(148, 163, 184, 0.35);
+}
+
+.lf-outcome-tag.is-booked {
+  background: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+}
+
+.lf-outcome-tag.is-lost {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--lf-muted-foreground);
+}
+
 .lf-status-active {
   background: rgba(59, 130, 246, 0.18);
   border: 1px solid rgba(59, 130, 246, 0.4);
@@ -1348,6 +1412,191 @@ button {
   border-radius: 0.75rem;
   border: 1px solid rgba(245, 158, 11, 0.35);
   background: rgba(245, 158, 11, 0.08);
+}
+
+.lf-admin-tag.is-booked {
+  background: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+}
+
+.lf-admin-tag.is-lost {
+  background: rgba(148, 163, 184, 0.15);
+  color: var(--lf-muted-foreground);
+}
+
+.lf-kpi-note {
+  margin-top: 0.25rem;
+  font-size: 0.6875rem;
+  color: #64748b;
+}
+
+/* ─── Charts ────────────────────────────────────────────────────────────── */
+/*
+ * All three chart forms here are single-series, so there is exactly one data
+ * hue and no legend: the card's own heading says what is plotted. Gridlines are
+ * solid hairlines one step off the surface — dashed rules read as a threshold
+ * or a projection when they are only a grid.
+ */
+
+.lf-chart-plot {
+  position: relative;
+  height: var(--lf-chart-h, 120px);
+}
+
+.lf-chart-cols {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px; /* the surface gap — what separates the columns, not a stroke */
+}
+
+.lf-gridline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: rgba(148, 163, 184, 0.12);
+}
+
+/*
+ * The slot is the full-height hit target; the column inside it is the mark.
+ * Separating them means a day with no loads is still hoverable — hovering a
+ * gap says "0 loads" rather than leaving the reader unsure whether the data is
+ * missing or the day was quiet.
+ */
+.lf-col-slot {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  height: 100%;
+  min-width: 0;
+}
+
+.lf-col-slot:hover {
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.lf-col {
+  width: 100%;
+  max-width: 24px; /* thin marks: never let a column fill its slot */
+  background: var(--lf-primary);
+  border-radius: 3px 3px 0 0; /* rounded data-end, square at the baseline */
+  opacity: 0.85;
+  transition: opacity 0.15s;
+  min-height: 2px;
+}
+
+.lf-col-slot:hover .lf-col {
+  opacity: 1;
+}
+
+/* A zero day draws no mark at all — a 2px stub would read as a small value. */
+.lf-col.is-empty {
+  min-height: 0;
+}
+
+/* The axis band lives outside the fixed plot height, so its labels are never
+ * clipped by the container and never spawn a nested scrollbar. */
+.lf-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 0.5rem;
+  font-size: 0.6875rem;
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.lf-chart-axis-max {
+  color: #475569;
+}
+
+.lf-spark {
+  display: inline-block;
+  vertical-align: middle;
+  overflow: visible;
+}
+
+/* ─── Clickable dispatcher rows ─────────────────────────────────────────── */
+
+.lf-stats-row[data-dispatcher-id] {
+  cursor: pointer;
+}
+
+.lf-stats-row[data-dispatcher-id]:hover {
+  background: rgba(148, 163, 184, 0.06);
+}
+
+.lf-stats-row[data-dispatcher-id]:focus-visible {
+  outline: 2px solid var(--lf-primary);
+  outline-offset: -2px;
+}
+
+.lf-stats-name {
+  font-size: 0.875rem;
+  color: #e2e8f0;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.lf-stats-row[data-dispatcher-id]:hover .lf-stats-name,
+.lf-stats-name:hover {
+  color: var(--lf-primary);
+}
+
+.lf-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 0.75rem;
+  color: var(--lf-muted-foreground);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  padding: 0;
+}
+
+.lf-back-link:hover {
+  color: #e2e8f0;
+}
+
+/* ─── Outcome tiles ─────────────────────────────────────────────────────── */
+/*
+ * Each tile carries its label as text. That is not decoration: emerald and the
+ * muted gray sit at ΔE ~7 under deuteranopia, which is inside the band where
+ * color needs a second channel to be legible. The word is that channel.
+ */
+
+.lf-outcome-tile {
+  padding: 0.75rem;
+  border-radius: 0.75rem;
+  background: rgba(2, 6, 23, 0.35);
+  border: 1px solid var(--lf-border);
+}
+
+.lf-outcome-tile-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--lf-foreground);
+}
+
+.lf-outcome-tile-label {
+  margin-top: 0.125rem;
+  font-size: 0.6875rem;
+  color: var(--lf-muted-foreground);
+}
+
+.lf-outcome-tile.is-booked .lf-outcome-tile-value {
+  color: #6ee7b7;
+}
+
+.lf-outcome-tile.is-pending .lf-outcome-tile-value {
+  color: #fcd34d;
 }
 
 /* Narrow windows: collapse the sidebar to an icon rail. */

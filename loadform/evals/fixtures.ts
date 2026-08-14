@@ -39,6 +39,7 @@ export const FIXTURES: Fixture[] = [
       weight: [/43,?000/],
       additional_notes: [/lumper|t-?check|negative\s*10|-\s*10/i],
       stops: [/none|direct|^$/i],
+      miles: null,
     },
   },
 
@@ -128,6 +129,28 @@ export const FIXTURES: Fixture[] = [
       equipment_type: [/dry\s*van|van/i],
       rate: [/2\.80|2,?900/],
       weight: [/22,?000/],
+      // 2,900 ÷ 2.80 is about 1,036 miles, and the model must not do that
+      // arithmetic. Mileage feeds rate-per-mile on the owner's dashboard, so a
+      // derived figure would silently become a measurement.
+      miles: null,
+    },
+  },
+
+  {
+    name: 'stated_mileage',
+    why:
+      'Brokers state trip mileage out loud, which is the only reason the app can ' +
+      'report rate per mile without a geocoder. The figure has to come back as ' +
+      'bare digits — "840", not "840 miles" — because it is stored as an integer.',
+    transcript: `Got a dry van, Kansas City Missouri down to Denver Colorado. Picks up Thursday morning, 7 AM, live load. Delivering Friday by noon. It's paper goods, 38,000 pounds. Run's 600 miles even, I can do 1,450 on it. Receiver is an appointment, don't be late, they'll turn you around.`,
+    expect: {
+      pickup_location: [/kansas city/i],
+      delivery_location: [/denver/i],
+      commodity: [/paper/i],
+      equipment_type: [/dry\s*van|van/i],
+      rate: [/1,?450/],
+      weight: [/38,?000/],
+      miles: [/^600$/],
     },
   },
 ];
