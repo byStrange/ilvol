@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test:js": "node --experimental-vm-modules src/templates.test.js && node src/loads.test.js && node src/organizations.test.js",
     "test:rs": "cd src-tauri && cargo test",
-    "test": "npm run test:js && npm run test:rs"
+    "test:deno": "deno test --allow-net supabase/functions/_shared/rubric.test.ts",
+    "test": "npm run test:js && npm run test:deno && npm run test:rs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.0"

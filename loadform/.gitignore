@@ -26,3 +26,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Stray capture artifact from a failed token grant
+src-tauri/deepgram-token

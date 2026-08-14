@@ -58,6 +58,10 @@ const PEOPLE = [
     ratePerMile: [2.55, 3.15],
     lanes: [0, 1, 3, 5],
     quiet: null,
+    process: [0.82, 0.95],
+    // Weighting over the loss taxonomy. Marcus loses mostly on price, which is
+    // a pricing decision rather than a performance problem.
+    losses: { rate_too_low: 5, already_covered: 3, no_truck: 2, lost_on_call: 1, requirements: 1 },
   },
   {
     key: 'tanya',
@@ -70,6 +74,8 @@ const PEOPLE = [
     ratePerMile: [2.9, 3.6],
     lanes: [2, 6, 8],
     quiet: null,
+    process: [0.9, 1.0],
+    losses: { rate_too_low: 6, already_covered: 3, requirements: 1 },
   },
   {
     key: 'dave',
@@ -82,6 +88,10 @@ const PEOPLE = [
     lanes: [1, 4, 7, 9, 10],
     // A week off, so at least one sparkline has a real gap in it.
     quiet: { from: 26, to: 33 },
+    // Low process AND low outcome — the one case where the call itself is
+    // genuinely where to start, and the losses say so too.
+    process: [0.3, 0.6],
+    losses: { lost_on_call: 8, rate_too_low: 3, already_covered: 2, no_truck: 1 },
   },
   {
     key: 'luis',
@@ -89,10 +99,15 @@ const PEOPLE = [
     role: 'dispatcher',
     joinedDaysAgo: 95,
     callsPerWeekday: [3, 5],
-    bookRate: 0.29,
+    bookRate: 0.2,
     ratePerMile: [2.35, 2.85],
     lanes: [0, 4, 9, 11],
     quiet: null,
+    // The case the whole split exists for: Luis runs calls as well as anyone
+    // and still loses more of them, because the freight he is handed is priced
+    // badly. On a single blended score he would look mediocre.
+    process: [0.85, 0.97],
+    losses: { rate_too_low: 9, no_truck: 3, already_covered: 2, lost_on_call: 1 },
   },
   {
     key: 'priya',
@@ -100,11 +115,35 @@ const PEOPLE = [
     role: 'dispatcher',
     joinedDaysAgo: 24,
     callsPerWeekday: [1, 3],
-    bookRate: 0.24,
+    // Books well while skipping steps — the newest dispatcher is being handed
+    // the easy freight, which reads as talent until you look at the calls.
+    // Every accessorial she doesn't ask about turns up later as a lumper bill.
+    bookRate: 0.32,
     ratePerMile: [2.2, 2.8],
     lanes: [3, 8, 11],
     quiet: null,
+    process: [0.5, 0.72],
+    losses: { rate_too_low: 3, lost_on_call: 3, already_covered: 2, schedule: 1 },
   },
+];
+
+/**
+ * Which steps a dispatcher tends to skip, in the order they get dropped.
+ *
+ * Not random: accessorials and appointment type are the first things to go
+ * under time pressure, and the last two are what a struggling dispatcher misses
+ * long after they have learned to ask the rate.
+ */
+const CHECK_IDS = [
+  'rate_asked',
+  'pickup_confirmed',
+  'delivery_confirmed',
+  'freight_details',
+  'equipment_confirmed',
+  'next_steps',
+  'rate_negotiated',
+  'appointment_type',
+  'accessorials_raised',
 ];
 
 /** Real corridors with roughly real mileage, so $/mile lands in a sane range. */
@@ -223,6 +262,12 @@ function makeLoad(rand, person, userId, date, daysAgo, index) {
     outcome = rand() < person.bookRate ? 'booked' : 'lost';
   }
 
+  // Some losses go unexplained, as they will in reality — a dispatcher in a
+  // hurry skips the question, and the console has to cope with that.
+  const lossReason = outcome === 'lost' && rand() > 0.12 ? weightedPick(rand, person.losses) : null;
+
+  const { checks, score } = makeCallReview(rand, person, outcome);
+
   // Spread the day's calls across working hours so timestamps look real.
   const at = new Date(date);
   at.setHours(8 + Math.floor(rand() * 9), Math.floor(rand() * 60), 0, 0);
@@ -264,9 +309,80 @@ function makeLoad(rand, person, userId, date, daysAgo, index) {
     rate: rateText,
     rate_usd: rateUsd,
     miles,
+    loss_reason: lossReason,
+    loss_note: null,
+    call_checks: checks,
+    call_score: score,
+    call_scored_at: score === null ? null : at.toISOString(),
+    call_score_skipped: score === null && outcome !== 'pending' ? 'too_short' : null,
     created_at: at.toISOString(),
   };
 }
+
+function weightedPick(rand, weights) {
+  const entries = Object.entries(weights);
+  const total = entries.reduce((sum, [, w]) => sum + w, 0);
+  let roll = rand() * total;
+  for (const [key, weight] of entries) {
+    roll -= weight;
+    if (roll <= 0) return key;
+  }
+  return entries[entries.length - 1][0];
+}
+
+/**
+ * A per-call review consistent with the dispatcher's habits.
+ *
+ * Built so the scorecard's per-step breakdown means something: someone with a
+ * low process score misses the *later* steps rather than random ones, which is
+ * how it actually goes — nobody forgets to ask the rate.
+ */
+function makeCallReview(rand, person, outcome) {
+  // A pending call is still in progress; a share of calls are too short to
+  // review at all, which the console has to show as "not scored", not as zero.
+  if (outcome === 'pending' || rand() < 0.12) return { checks: null, score: null };
+
+  const ability = between(rand, person.process[0], person.process[1]);
+  const checks = {};
+  let passed = 0;
+  let applicable = 0;
+
+  CHECK_IDS.forEach((id, index) => {
+    // Later steps in the list are the ones that get dropped first, so the
+    // threshold rises as we go.
+    const difficulty = index / (CHECK_IDS.length - 1);
+    // Negotiation genuinely doesn't arise on a load that was already covered.
+    if (id === 'rate_negotiated' && rand() < 0.15) {
+      checks[id] = { result: 'na', quote: '' };
+      return;
+    }
+    const done = ability > difficulty * 0.95 && rand() < 0.5 + ability / 2;
+    checks[id] = {
+      result: done ? 'pass' : 'miss',
+      quote: done ? DEMO_QUOTES[id] : '',
+    };
+    applicable += 1;
+    if (done) passed += 1;
+  });
+
+  return {
+    checks,
+    score: applicable > 0 ? Math.round((passed / applicable) * 10000) / 100 : null,
+  };
+}
+
+/** Stand-in evidence, so the scorecard shows what a real quote looks like. */
+const DEMO_QUOTES = {
+  rate_asked: 'what does it pay on that one',
+  rate_negotiated: "that's low for that lane, I need more to make it work",
+  pickup_confirmed: 'picks up tomorrow morning, eight AM',
+  delivery_confirmed: 'delivering Thursday by six AM',
+  appointment_type: "it's first come first served until three",
+  freight_details: 'frozen chicken, forty three thousand pounds',
+  equipment_confirmed: "it's a reefer, set at negative ten continuous",
+  accessorials_raised: 'is there a lumper at delivery',
+  next_steps: "send me the rate confirmation and I'll get you the driver info",
+};
 
 // Built once per session. Regenerating per render would be wasteful and, with
 // timestamps relative to now, would make rows drift under the reader.
@@ -287,8 +403,10 @@ export function demoOrgLoads() {
     user_id: l.user_id,
     status: l.status,
     outcome: l.outcome,
+    loss_reason: l.loss_reason,
     rate_usd: l.rate_usd,
     miles: l.miles,
+    call_score: l.call_score,
     created_at: l.created_at,
   }));
 }

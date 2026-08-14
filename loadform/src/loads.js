@@ -36,10 +36,31 @@ const LOAD_FIELDS = [
 
 // Lightweight columns used for the history list view.
 const LIST_SELECT =
-  'id,title,status,outcome,pickup_location,delivery_location,pickup_datetime,rate,created_at,updated_at';
+  'id,title,status,outcome,loss_reason,call_score,pickup_location,delivery_location,pickup_datetime,rate,created_at,updated_at';
 
 /** Outcomes a load can end in. Mirrors loads_outcome_check in the migration. */
 export const OUTCOMES = ['pending', 'booked', 'lost'];
+
+/**
+ * Why a load was lost. Mirrors loads_loss_reason_check in the migration.
+ *
+ * `controllable` is the field the whole taxonomy exists for: it marks the
+ * reasons that say something about the dispatcher, as opposed to the ones that
+ * are a pricing, capacity or timing problem recorded against whoever happened
+ * to take the call. An owner reading a low booking rate without this split will
+ * blame the person every time.
+ */
+export const LOSS_REASON_META = {
+  rate_too_low: { label: 'Rate too low', controllable: false },
+  already_covered: { label: 'Already covered', controllable: false },
+  no_truck: { label: 'No truck / wrong equipment', controllable: false },
+  requirements: { label: "Couldn't meet requirements", controllable: false },
+  schedule: { label: "Couldn't make the schedule", controllable: false },
+  lost_on_call: { label: 'Lost on the call', controllable: true },
+  other: { label: 'Something else', controllable: false },
+};
+
+export const LOSS_REASONS = Object.keys(LOSS_REASON_META);
 
 /**
  * Pull a total dollar figure out of the free-text rate field.
@@ -178,7 +199,7 @@ export async function saveLoad(
   confidence,
   transcript,
   orgId,
-  outcome = null
+  answer = null
 ) {
   if (!supabase || !userId) return { id: null };
 
@@ -204,7 +225,16 @@ export async function saveLoad(
 
   // Only written when the caller actually asked the dispatcher. Autosave on
   // field edits passes null, which must leave a recorded outcome alone.
-  if (outcome && OUTCOMES.includes(outcome)) row.outcome = outcome;
+  if (answer?.outcome && OUTCOMES.includes(answer.outcome)) {
+    row.outcome = answer.outcome;
+    // Cleared on any non-lost outcome: a load reopened as pending, or later
+    // booked after all, must not keep the reason it was once lost for.
+    row.loss_reason =
+      answer.outcome === 'lost' && LOSS_REASONS.includes(answer.lossReason)
+        ? answer.lossReason
+        : null;
+    row.loss_note = answer.outcome === 'lost' ? answer.lossNote || null : null;
+  }
 
   try {
     if (loadId) {
@@ -259,6 +289,34 @@ export async function fetchLoads(supabase, userId) {
   return data || [];
 }
 
+/**
+ * The signed-in user's own loads, with the columns the scorecard needs.
+ *
+ * Unlike fetchLoads (the history list, slim), this selects call_checks,
+ * call_score_skipped, rate_usd, miles and loss_note — everything the
+ * per-step pass-rate breakdown, the process score and the loss-reason split
+ * are computed from. Self-scoped: a dispatcher's RLS lets them read their own
+ * rows and nobody else's, so there is no org gate here — that is the whole
+ * reason a self-view can exist without the admin-only peer reads.
+ */
+const MY_STATS_SELECT =
+  'id, title, status, outcome, loss_reason, loss_note, call_score, call_checks, call_score_skipped, rate, rate_usd, miles, pickup_location, delivery_location, created_at';
+
+export async function fetchMyLoadsDetailed(supabase, userId, limit = 200) {
+  if (!supabase || !userId) return [];
+  const { data, error } = await supabase
+    .from('loads')
+    .select(MY_STATS_SELECT)
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error('fetchMyLoadsDetailed failed:', error);
+    return [];
+  }
+  return data || [];
+}
+
 /** Fetch a single load with full details (for "Open"). */
 export async function fetchLoad(supabase, id) {
   if (!supabase || !id) return null;
@@ -294,12 +352,28 @@ export async function setLoadStatus(supabase, id, status) {
  * Separate from setLoadStatus because the two are unrelated: archiving a load
  * in the history panel says nothing about whether it was won.
  */
-export async function setLoadOutcome(supabase, id, outcome) {
+export async function setLoadOutcome(
+  supabase,
+  id,
+  outcome,
+  lossReason = null,
+  lossNote = null
+) {
   if (!supabase || !id || !OUTCOMES.includes(outcome)) return false;
-  const { error } = await supabase
-    .from('loads')
-    .update({ outcome, updated_at: new Date().toISOString() })
-    .eq('id', id);
+  const patch = { outcome, updated_at: new Date().toISOString() };
+  if (outcome !== 'lost') {
+    // Reopening or rebooking a load drops the reason it was lost for, which
+    // would otherwise sit on the row contradicting its own outcome.
+    patch.loss_reason = null;
+    patch.loss_note = null;
+  } else {
+    // The reason is a fixed taxonomy; the note is the dispatcher's own words on
+    // top. They're independent: a "skip" on the reason can still carry a note,
+    // so the note is persisted whether or not a reason was chosen.
+    patch.loss_reason = LOSS_REASONS.includes(lossReason) ? lossReason : null;
+    patch.loss_note = lossNote && lossNote.trim() ? lossNote.trim() : null;
+  }
+  const { error } = await supabase.from('loads').update(patch).eq('id', id);
   if (error) {
     console.error('setLoadOutcome failed:', error);
     return false;
