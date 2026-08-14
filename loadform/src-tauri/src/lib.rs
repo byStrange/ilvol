@@ -687,6 +687,7 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
         // pushing updates into nothing. It rebuilds from `get_load_fields` when
         // the sun comes back.
         close_planet_windows(&app);
+        let _ = app.emit_to("widget", "widget:visibility", false);
     } else {
         // Place the widget BEFORE showing it. On Linux this is where
         // gtk_layer_init_for_window runs, and it asserts the window is not yet
@@ -707,6 +708,10 @@ fn toggle_widget(app: AppHandle, widget_pos: State<'_, WidgetPos>) -> Result<(),
         }
         window.show().map_err(|e| e.to_string())?;
         let _ = window.set_focus();
+
+        // The orbit is allowed to exist again. Sent before the geometry below,
+        // which is what actually rebuilds it.
+        let _ = app.emit_to("widget", "widget:visibility", true);
 
         // Tell the widget where it ended up. Its JS ran at app startup — long
         // before this first show — so whatever geometry it read back then is
@@ -817,6 +822,25 @@ struct WidgetGeometry {
 /// the ordinary top-level window API.
 const USES_LAYER_SHELL: bool = cfg!(target_os = "linux");
 
+/// Whether the sun is currently on screen.
+///
+/// The planets are chips *of* the widget: placed against the sun's corner,
+/// dragged with it, torn down with it. A planet without a sun isn't a smaller
+/// orbit, it's a loose window floating over whatever the user was actually
+/// looking at, with nothing on screen to explain it or close it.
+///
+/// The widget window exists from startup — created hidden — and its JS runs the
+/// whole time, `load:fields` listener and all. So an extraction driven from the
+/// main window will build an orbit around a sun nobody opened unless something
+/// asks this question first. Both sides do: the widget checks before it asks
+/// (see widget.js), and `create_planet_window` checks before it builds.
+#[tauri::command]
+fn is_widget_visible(app: AppHandle) -> bool {
+    app.get_webview_window("widget")
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 fn get_widget_position(
     app: AppHandle,
@@ -876,6 +900,19 @@ async fn create_planet_window(
     store: State<'_, PlanetStore>,
     planet: CreatePlanetPayload,
 ) -> Result<(), String> {
+    // No sun, no planets — see `is_widget_visible`. This also settles the race
+    // where a create is already in flight as the sun hides: the hide closes the
+    // orbit, and anything arriving after it is refused rather than left behind
+    // as an orphan chip with nothing to close it.
+    //
+    // Refusing loudly rather than quietly succeeding is deliberate. The caller
+    // owns the slot map, and it has to hear that this planet was not built —
+    // otherwise the slot stays reserved and every later extraction pushes an
+    // update at a window that never existed instead of building one.
+    if !is_widget_visible(app.clone()) {
+        return Err("Widget is hidden — planets only orbit a visible sun.".to_string());
+    }
+
     let label = format!("planet-{}", planet.key);
 
     let data = serde_json::json!({
@@ -1023,6 +1060,7 @@ fn continue_in_app(app: AppHandle) -> Result<(), String> {
     if let Some(widget) = app.get_webview_window("widget") {
         widget.hide().map_err(|e| e.to_string())?;
         close_planet_windows(&app);
+        let _ = app.emit_to("widget", "widget:visibility", false);
     }
     Ok(())
 }
@@ -1120,6 +1158,7 @@ pub fn run() {
             init_layer_widget,
             move_orbit,
             get_widget_position,
+            is_widget_visible,
             create_planet_window,
             get_planet_data,
             move_planet_window,
