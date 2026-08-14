@@ -275,34 +275,73 @@
     -->
     <div id="outcome-modal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
       <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-sm">
-        <h2 class="text-lg font-bold text-white">How did this one go?</h2>
-        <p id="outcome-lane" class="text-xs text-slate-500 mt-1 mb-5 truncate"></p>
-        <div class="space-y-2">
+        <!-- Step 1: what happened -->
+        <div id="outcome-step-result">
+          <h2 class="text-lg font-bold text-white">How did this one go?</h2>
+          <p id="outcome-lane" class="text-xs text-slate-500 mt-1 mb-5 truncate"></p>
+          <div class="space-y-2">
+            <button
+              type="button"
+              data-outcome="booked"
+              class="lf-btn w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-medium"
+            >
+              Booked it
+            </button>
+            <button
+              type="button"
+              data-outcome="lost"
+              class="lf-btn w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium"
+            >
+              Didn't get it
+            </button>
+            <button
+              type="button"
+              data-outcome="pending"
+              class="lf-btn w-full py-2.5 bg-slate-800/60 hover:bg-slate-700 text-slate-300 font-medium"
+            >
+              Not yet — still working it
+            </button>
+          </div>
+          <p class="text-[11px] text-slate-600 mt-4 text-center">
+            You can change this later from Load History.
+          </p>
+        </div>
+
+        <!--
+          Step 2: why. Only shown for a lost load, and the answers are what let
+          the console separate "we lost it" from "this dispatcher lost it" —
+          most losses are a rate or a capacity problem wearing a person's name.
+          Skippable, because a reason someone is forced to invent is worse than
+          no reason at all.
+        -->
+        <div id="outcome-step-reason" class="hidden">
+          <h2 class="text-lg font-bold text-white">What happened to it?</h2>
+          <p class="text-xs text-slate-500 mt-1 mb-4">
+            This is what tells your office whether it was the rate, the trucks, or the call.
+          </p>
+          <div class="space-y-1.5">
+            <button type="button" data-loss-reason="rate_too_low" class="lf-reason-btn">Rate was too low</button>
+            <button type="button" data-loss-reason="already_covered" class="lf-reason-btn">Already covered</button>
+            <button type="button" data-loss-reason="no_truck" class="lf-reason-btn">No truck / wrong equipment</button>
+            <button type="button" data-loss-reason="requirements" class="lf-reason-btn">Couldn't meet their requirements</button>
+            <button type="button" data-loss-reason="schedule" class="lf-reason-btn">Couldn't make the schedule</button>
+            <button type="button" data-loss-reason="lost_on_call" class="lf-reason-btn">Lost it on the call</button>
+            <button type="button" data-loss-reason="other" class="lf-reason-btn">Something else</button>
+          </div>
+          <textarea
+            id="outcome-note"
+            rows="2"
+            placeholder="Anything worth remembering (optional)"
+            class="lf-input w-full text-sm mt-3 resize-none"
+          ></textarea>
           <button
             type="button"
-            data-outcome="booked"
-            class="lf-btn w-full py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-900 font-medium"
+            data-loss-reason=""
+            class="lf-btn w-full py-2 mt-2 bg-transparent hover:bg-slate-800 text-slate-500 text-xs font-medium"
           >
-            Booked it
-          </button>
-          <button
-            type="button"
-            data-outcome="lost"
-            class="lf-btn w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium"
-          >
-            Didn't get it
-          </button>
-          <button
-            type="button"
-            data-outcome="pending"
-            class="lf-btn w-full py-2.5 bg-slate-800/60 hover:bg-slate-700 text-slate-300 font-medium"
-          >
-            Not yet — still working it
+            Skip
           </button>
         </div>
-        <p class="text-[11px] text-slate-600 mt-4 text-center">
-          You can change this later from Load History.
-        </p>
       </div>
     </div>
 
@@ -578,11 +617,37 @@
                 <div id="admin-dispatcher-trend"></div>
               </div>
 
+              <!--
+                The scorecard. Process and outcome are shown side by side and
+                never merged: the disagreement between them is the only way to
+                tell "this dispatcher is struggling" from "this dispatcher is
+                being handed freight nobody could book".
+              -->
+              <div class="glass glass-lit rounded-2xl p-5 mb-5">
+                <div class="flex items-center justify-between mb-1">
+                  <h3 class="text-sm font-semibold text-white">How they run a call</h3>
+                  <span id="admin-dispatcher-scored-count" class="text-xs text-slate-500"></span>
+                </div>
+                <p class="text-xs text-slate-500 mb-4">
+                  Which steps they completed, read from the call transcript. Measures what was covered,
+                  never how they sounded.
+                </p>
+                <div id="admin-dispatcher-verdict" class="lf-verdict mb-4 hidden"></div>
+                <div id="admin-dispatcher-checks" class="space-y-2.5"></div>
+                <p id="admin-dispatcher-checks-empty" class="text-sm text-slate-500 text-center py-6 hidden"></p>
+              </div>
+
               <div class="grid lg:grid-cols-2 gap-5 mb-5">
                 <div class="glass glass-lit rounded-2xl p-5">
                   <h3 class="text-sm font-semibold text-white mb-1">Outcomes</h3>
                   <p class="text-xs text-slate-500 mb-4">Every call they've captured.</p>
                   <div id="admin-dispatcher-outcomes" class="grid grid-cols-3 gap-3"></div>
+                  <!--
+                    The split that stops a low booking rate being read as a bad
+                    dispatcher. Most losses are a price or a truck, not a person.
+                  -->
+                  <h4 class="text-xs font-semibold text-slate-400 mt-5 mb-2">Why loads were lost</h4>
+                  <div id="admin-dispatcher-losses" class="space-y-2"></div>
                 </div>
                 <div class="glass glass-lit rounded-2xl p-5">
                   <h3 class="text-sm font-semibold text-white mb-1">Lanes they run</h3>
@@ -739,6 +804,16 @@
             </svg>
           </button>
           <button
+            id="my-stats-btn"
+            class="lf-icon-btn h-9 rounded-xl text-slate-200 flex items-center justify-center gap-1.5 px-3 text-sm font-medium"
+            title="How you're running calls"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 3v18h18" /><path d="m7 14 3-3 4 4 6-7" />
+            </svg>
+            <span class="hidden sm:inline">My stats</span>
+          </button>
+          <button
             id="history-btn"
             class="lf-icon-btn h-9 rounded-xl text-slate-200 flex items-center justify-center gap-1.5 px-3 text-sm font-medium"
             title="Load history"
@@ -822,6 +897,51 @@
           <p id="history-empty" class="text-sm text-slate-500 text-center py-8">
             No saved loads yet. Capture a broker call and extract to start your history.
           </p>
+        </div>
+      </section>
+
+      <!--
+        My stats — the dispatcher's own scorecard. The same reading an owner
+        sees, pointed at yourself: process score, the per-step pass rates with
+        the quote that earned each mark, the outcome split, and the quadrant
+        verdict read against the team median.
+      -->
+      <section id="my-stats-panel" class="mb-6 hidden">
+        <div class="glass glass-lit rounded-2xl p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h2 class="text-lg font-semibold text-white">How you're running calls</h2>
+              <p class="text-xs text-slate-500 mt-0.5">
+                Steps you completed, read from your call transcripts. Measures what was covered, never how you sounded.
+              </p>
+            </div>
+            <span id="my-stats-scored-count" class="text-xs text-slate-500 shrink-0"></span>
+          </div>
+
+          <div id="my-stats-kpis" class="grid grid-cols-2 lg:grid-cols-4 gap-3"></div>
+
+          <div id="my-stats-verdict" class="lf-verdict my-4 hidden"></div>
+
+          <div class="flex items-center justify-between mb-1 mt-2">
+            <h3 class="text-sm font-semibold text-white">Per step</h3>
+          </div>
+          <div id="my-stats-checks" class="space-y-2.5"></div>
+          <p id="my-stats-checks-empty" class="text-sm text-slate-500 text-center py-6 hidden"></p>
+
+          <div class="grid lg:grid-cols-2 gap-5 mt-5">
+            <div>
+              <h3 class="text-sm font-semibold text-white mb-1">Outcomes</h3>
+              <p class="text-xs text-slate-500 mb-3">Every call you've captured.</p>
+              <div id="my-stats-outcomes" class="grid grid-cols-3 gap-3"></div>
+              <h4 class="text-xs font-semibold text-slate-400 mt-4 mb-2">Why loads were lost</h4>
+              <div id="my-stats-losses" class="space-y-2"></div>
+            </div>
+            <div>
+              <h3 class="text-sm font-semibold text-white mb-1">Calls per day</h3>
+              <p class="text-xs text-slate-500 mb-3">Your last 30 days.</p>
+              <div id="my-stats-trend"></div>
+            </div>
+          </div>
         </div>
       </section>
 

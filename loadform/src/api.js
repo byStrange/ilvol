@@ -188,6 +188,62 @@ export async function changeOwnPassword(password) {
 }
 
 /**
+ * The team medians a dispatcher's own scorecard is read against.
+ *
+ * The verdict (performing / easy freight / not their fault / needs coaching) is
+ * a comparison to peers, and peer loads are admin-only by RLS — so the
+ * comparison can only exist server-side. This returns the two medians and how
+ * many peers qualified, nothing per-person. Returns null on failure: the
+ * scorecard degrades to "no one to compare against yet" rather than breaking.
+ */
+export async function fetchPeerMedians() {
+  const { data, error } = await supabase.rpc('peer_medians');
+  if (error) {
+    console.warn('peer_medians failed:', error.message);
+    return null;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
+  return {
+    medianProcessScore: row.median_process_score ?? null,
+    medianBookingRate: row.median_booking_rate ?? null,
+    peerCount: row.peer_count ?? 0,
+  };
+}
+
+/**
+ * Ask the server to review a finished call against the rubric.
+ *
+ * Idempotent per load: a call already reviewed returns its stored result
+ * without spending provider money again. The score is written server-side
+ * because a dispatcher must not be able to write their own — see the column
+ * grants in 20260814010000_call_quality.sql.
+ */
+export async function scoreCall(loadId) {
+  const { data, error } = await supabase.functions.invoke('score-call', {
+    body: { action: 'score', load_id: loadId },
+  });
+  if (error) throw await edgeError(error, data);
+  return data;
+}
+
+/**
+ * Review a batch of the org's unreviewed calls.
+ *
+ * Transcripts are already stored, so unlike outcomes, call quality is fully
+ * backfillable — an org that has been capturing for weeks can score its history
+ * rather than starting from nothing. Returns how many are left so the caller
+ * can keep going.
+ */
+export async function scoreCallBacklog() {
+  const { data, error } = await supabase.functions.invoke('score-call', {
+    body: { action: 'backlog' },
+  });
+  if (error) throw await edgeError(error, data);
+  return data;
+}
+
+/**
  * Report how long a capture ran, once it stops.
  *
  * Best-effort and intentionally silent on failure: this is analytics, and a

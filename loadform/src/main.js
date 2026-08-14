@@ -28,6 +28,7 @@ import {
   createTeamMember,
   resetMemberPassword,
   changeOwnPassword,
+  fetchPeerMedians,
 } from './api.js';
 import {
   saveLoad,
@@ -37,6 +38,7 @@ import {
   setLoadOutcome,
   deleteLoad,
   loadToDriverText,
+  fetchMyLoadsDetailed,
 } from './loads.js';
 import { startTutorial } from './tutorial.js';
 import {
@@ -46,6 +48,7 @@ import {
   demoDispatcherLoads,
   demoSummary,
 } from './demo-data.js';
+import { LOSS_REASON_META } from './loads.js';
 import {
   createOrganization,
   fetchMyMembership,
@@ -63,6 +66,10 @@ import {
   aggregateDispatcherStats,
   orgDailySeries,
   topLanes,
+  readPerformance,
+  verdictFromMedians,
+  aggregateChecks,
+  MIN_SCORED_CALLS,
 } from './organizations.js';
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
@@ -176,6 +183,8 @@ let currentLoadId = null; // DB id of the load currently being edited (null = ne
 let currentLoadOutcome = 'pending'; // outcome of that load, so a resolved one isn't re-asked
 let loadsList = []; // cached history rows for the panel
 let showCompleted = false; // history panel filter
+let myStatsLoads = []; // the signed-in dispatcher's own loads (detailed), for the self-view
+let myStatsPeers = null; // { medianProcessScore, medianBookingRate, peerCount } from peer_medians RPC
 let editSaveTimer = null; // debounced autosave-on-edit timer
 const EDIT_SAVE_DEBOUNCE_MS = 1200;
 
@@ -348,6 +357,11 @@ const els = {
   adminDispatcherKpis: document.getElementById('admin-dispatcher-kpis'),
   adminDispatcherTrend: document.getElementById('admin-dispatcher-trend'),
   adminDispatcherOutcomes: document.getElementById('admin-dispatcher-outcomes'),
+  adminDispatcherLosses: document.getElementById('admin-dispatcher-losses'),
+  adminDispatcherVerdict: document.getElementById('admin-dispatcher-verdict'),
+  adminDispatcherChecks: document.getElementById('admin-dispatcher-checks'),
+  adminDispatcherChecksEmpty: document.getElementById('admin-dispatcher-checks-empty'),
+  adminDispatcherScoredCount: document.getElementById('admin-dispatcher-scored-count'),
   adminDispatcherLanes: document.getElementById('admin-dispatcher-lanes'),
   adminDispatcherLoads: document.getElementById('admin-dispatcher-loads'),
   adminDispatcherLoadsEmpty: document.getElementById('admin-dispatcher-loads-empty'),
@@ -366,6 +380,9 @@ const els = {
   // Outcome prompt
   outcomeModal: document.getElementById('outcome-modal'),
   outcomeLane: document.getElementById('outcome-lane'),
+  outcomeStepResult: document.getElementById('outcome-step-result'),
+  outcomeStepReason: document.getElementById('outcome-step-reason'),
+  outcomeNote: document.getElementById('outcome-note'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -374,6 +391,17 @@ const els = {
   historyEmpty: document.getElementById('history-empty'),
   historyCount: document.getElementById('history-count'),
   historyShowCompleted: document.getElementById('history-show-completed'),
+  // My stats (dispatcher's own scorecard)
+  myStatsBtn: document.getElementById('my-stats-btn'),
+  myStatsPanel: document.getElementById('my-stats-panel'),
+  myStatsKpis: document.getElementById('my-stats-kpis'),
+  myStatsScoredCount: document.getElementById('my-stats-scored-count'),
+  myStatsVerdict: document.getElementById('my-stats-verdict'),
+  myStatsChecks: document.getElementById('my-stats-checks'),
+  myStatsChecksEmpty: document.getElementById('my-stats-checks-empty'),
+  myStatsOutcomes: document.getElementById('my-stats-outcomes'),
+  myStatsLosses: document.getElementById('my-stats-losses'),
+  myStatsTrend: document.getElementById('my-stats-trend'),
 };
 
 // ─── Field Definitions ────────────────────────────────────────────────────
@@ -1064,8 +1092,8 @@ async function handleNewLoad() {
     // Only ask about loads that are still open. Re-opening a resolved load to
     // fix a typo and being re-interrogated about it teaches dispatchers to
     // dismiss the dialog reflexively.
-    const outcome = currentLoadOutcome === 'pending' ? await askLoadOutcome() : null;
-    await saveCurrentLoad(outcome);
+    const answer = currentLoadOutcome === 'pending' ? await askLoadOutcome() : null;
+    await saveCurrentLoad(answer);
   }
   currentLoadId = null;
   currentLoadOutcome = 'pending';
@@ -1080,28 +1108,50 @@ async function handleNewLoad() {
  * save: the dispatcher's next load is what they actually care about, and
  * blocking that on an answer they may not have would make the prompt something
  * to route around.
+ *
+ * `lane` overrides the subtitle (the capture flow reads it from the form; the
+ * history flow reads it from the stored row). `startStep` jumps straight to the
+ * reason step, used when the outcome was already chosen in the history list —
+ * the dispatcher picked "Lost" there, so this only collects why.
  */
-function askLoadOutcome() {
+function askLoadOutcome({ lane: laneOverride, startStep = 'result' } = {}) {
   return new Promise((resolve) => {
-    const lane = [
-      currentExtractedData?.pickup_location,
-      currentExtractedData?.delivery_location,
-    ]
-      .filter(Boolean)
-      .join(' → ');
+    const lane =
+      laneOverride ??
+      [currentExtractedData?.pickup_location, currentExtractedData?.delivery_location]
+        .filter(Boolean)
+        .join(' → ');
     els.outcomeLane.textContent = lane || 'This load';
+    showOutcomeStep(startStep);
+    els.outcomeNote.value = '';
 
-    const finish = (outcome) => {
+    const finish = (outcome, lossReason = null) => {
       els.outcomeModal.removeEventListener('click', onClick);
       document.removeEventListener('keydown', onKey, true);
       els.outcomeModal.classList.add('hidden');
-      resolve(outcome);
+      resolve({
+        outcome,
+        lossReason: outcome === 'lost' ? lossReason || null : null,
+        lossNote: outcome === 'lost' ? els.outcomeNote.value.trim() || null : null,
+      });
     };
 
     const onClick = (e) => {
-      const btn = e.target.closest('[data-outcome]');
-      if (btn) return finish(btn.dataset.outcome);
-      if (e.target === els.outcomeModal) finish('pending');
+      const outcomeBtn = e.target.closest('[data-outcome]');
+      if (outcomeBtn) {
+        // A lost load is the only one with a follow-up question. Booking
+        // something needs no explanation, and asking for one would make the
+        // good outcome the slower one to record.
+        if (outcomeBtn.dataset.outcome === 'lost') return showOutcomeStep('reason');
+        return finish(outcomeBtn.dataset.outcome);
+      }
+      const reasonBtn = e.target.closest('[data-loss-reason]');
+      if (reasonBtn) return finish('lost', reasonBtn.dataset.lossReason);
+      // Dismissing from the reason step still records the loss — the dispatcher
+      // answered the question that matters, and the why is optional.
+      if (e.target === els.outcomeModal) {
+        finish(outcomeStep === 'reason' ? 'lost' : 'pending');
+      }
     };
 
     const onKey = (e) => {
@@ -1109,7 +1159,7 @@ function askLoadOutcome() {
         // Captured, so this dialog claims Escape ahead of anything a future
         // global handler might do with it while the prompt is open.
         e.stopPropagation();
-        finish('pending');
+        finish(outcomeStep === 'reason' ? 'lost' : 'pending');
       }
     };
 
@@ -1117,6 +1167,14 @@ function askLoadOutcome() {
     document.addEventListener('keydown', onKey, true);
     els.outcomeModal.classList.remove('hidden');
   });
+}
+
+let outcomeStep = 'result';
+
+function showOutcomeStep(step) {
+  outcomeStep = step;
+  els.outcomeStepResult.classList.toggle('hidden', step !== 'result');
+  els.outcomeStepReason.classList.toggle('hidden', step !== 'reason');
 }
 
 function resetForm() {
@@ -1159,7 +1217,7 @@ function resetForm() {
 // Persist the current in-memory load to Supabase. Inserts a new row when there
 // is no currentLoadId (first save), otherwise updates the existing row.
 // Never throws — a save failure is logged but does not block the UI.
-async function saveCurrentLoad(outcome = null) {
+async function saveCurrentLoad(answer = null) {
   if (!currentUser || !currentExtractedData) return;
   const { id } = await saveLoad(
     supabase,
@@ -1169,13 +1227,27 @@ async function saveCurrentLoad(outcome = null) {
     currentConfidence,
     accumulatedTranscript,
     currentMembership?.org_id,
-    outcome
+    answer
   );
   if (id && !currentLoadId) {
     currentLoadId = id;
   }
-  if (outcome) currentLoadOutcome = outcome;
+  if (answer?.outcome) {
+    currentLoadOutcome = answer.outcome;
+    // The call is over and has a transcript, so it can be reviewed now. Fired
+    // and forgotten: a dispatcher starting their next load must never wait on
+    // a model, and the backlog sweep picks up anything this misses.
+    requestCallScore(id || currentLoadId);
+  }
   refreshLoadsList();
+}
+
+/** Ask the server to review a finished call. Best-effort by design. */
+function requestCallScore(loadId) {
+  if (!loadId) return;
+  scoreCall(loadId).catch((err) => {
+    console.error('call scoring failed:', err.message);
+  });
 }
 
 // Debounced autosave triggered by form field edits.
@@ -1354,9 +1426,28 @@ async function toggleLoadStatus(id) {
   await refreshLoadsList();
 }
 
-/** Record (or reopen) a load's outcome from the history panel. */
+/**
+ * Record (or reopen) a load's outcome from the history panel.
+ *
+ * A loss marked here opens the same reason prompt as the capture flow: without
+ * it, a load tapped "Lost" in the list carries no reason and never reaches the
+ * "why loads were lost" breakdown — so the office would see the loss but not
+ * whether it was the rate, the trucks, or the call. Booking and reopening need
+ * no follow-up, so only the lost path prompts.
+ */
 async function changeLoadOutcome(id, outcome) {
-  const ok = await setLoadOutcome(supabase, id, outcome);
+  let lossReason = null;
+  let lossNote = null;
+  if (outcome === 'lost') {
+    const load = loadsList.find((l) => l.id === id);
+    const lane = load
+      ? [load.pickup_location, load.delivery_location].filter(Boolean).join(' → ')
+      : '';
+    const answer = await askLoadOutcome({ lane, startStep: 'reason' });
+    lossReason = answer.lossReason;
+    lossNote = answer.lossNote;
+  }
+  const ok = await setLoadOutcome(supabase, id, outcome, lossReason, lossNote);
   if (!ok) return;
   // Keep the open load's state in step, so starting the next one doesn't
   // re-ask about a load just answered here — or skip asking about one just
@@ -1414,6 +1505,187 @@ function toggleHistoryPanel(show) {
   } else {
     els.historyPanel.classList.add('hidden');
   }
+}
+
+// ─── My stats (dispatcher's own scorecard) ─────────────────────────────────
+//
+// The same reading an owner gets in the admin console, pointed at the signed-in
+// dispatcher. Their own loads are RLS-readable (call_checks included); the peer
+// medians the verdict needs are not, so they come from the peer_medians RPC.
+
+function toggleMyStatsPanel(show) {
+  if (show === undefined) {
+    els.myStatsPanel.classList.toggle('hidden');
+  } else if (show) {
+    els.myStatsPanel.classList.remove('hidden');
+  } else {
+    els.myStatsPanel.classList.add('hidden');
+  }
+}
+
+async function refreshMyStats() {
+  if (!currentUser) return;
+  // The own-loads fetch and the peer-median fetch are independent, so they run
+  // together; the verdict just degrades to "no one to compare against" if the
+  // median call fails.
+  const [loads, peers] = await Promise.all([
+    fetchMyLoadsDetailed(supabase, currentUser.id),
+    fetchPeerMedians(),
+  ]);
+  myStatsLoads = loads;
+  myStatsPeers = peers;
+  renderMyStats();
+}
+
+function renderMyStats() {
+  // A single-member roster seeds exactly one stat row — the signed-in
+  // dispatcher's own. Their loads are all their own under RLS, so no "former
+  // member" bucket appears.
+  const me = {
+    user_id: currentUser.id,
+    invited_email: currentUser.email,
+    role: currentMembership?.role ?? null,
+    status: 'active',
+  };
+  const stats = aggregateDispatcherStats(myStatsLoads, [me]);
+  const stat = stats[0];
+
+  if (!stat || stat.total === 0) {
+    els.myStatsKpis.innerHTML = '';
+    els.myStatsVerdict.classList.add('hidden');
+    els.myStatsChecks.innerHTML = '';
+    els.myStatsChecksEmpty.classList.remove('hidden');
+    els.myStatsChecksEmpty.textContent =
+      'No calls captured yet. Run a broker call and it will show up here.';
+    els.myStatsOutcomes.innerHTML = '';
+    els.myStatsLosses.innerHTML = '';
+    els.myStatsTrend.innerHTML = '';
+    els.myStatsScoredCount.textContent = '';
+    return;
+  }
+  els.myStatsChecksEmpty.classList.add('hidden');
+
+  els.myStatsScoredCount.textContent = stat.scoredCalls
+    ? `${stat.scoredCalls} call${stat.scoredCalls === 1 ? '' : 's'} reviewed`
+    : '';
+
+  els.myStatsKpis.innerHTML =
+    kpiTile('Call score', formatProcessScore(stat), 'steps completed') +
+    kpiTile('Booking rate', formatBookingRate(stat.bookingRate), `${stat.booked} booked`) +
+    kpiTile('Revenue booked', formatMoney(stat.revenue, { compact: true })) +
+    kpiTile('Avg rate per mile', formatRatePerMile(stat.ratePerMile));
+
+  // Below the sample floor there is no verdict and no breakdown — a per-step
+  // rate over four calls would be read as a fact when it is barely a hint.
+  if (stat.scoredCalls < MIN_SCORED_CALLS) {
+    els.myStatsVerdict.classList.add('hidden');
+    els.myStatsChecks.innerHTML = '';
+    els.myStatsChecksEmpty.classList.remove('hidden');
+    els.myStatsChecksEmpty.textContent = stat.scoredCalls
+      ? `${stat.scoredCalls} of ${MIN_SCORED_CALLS} calls reviewed. Too few to read anything into yet.`
+      : 'No calls reviewed yet. Reviews run automatically as calls are finished.';
+  } else {
+    els.myStatsChecksEmpty.classList.add('hidden');
+    const read = verdictFromMedians(
+      stat,
+      myStatsPeers?.medianProcessScore ?? null,
+      myStatsPeers?.medianBookingRate ?? null,
+      myStatsPeers?.peerCount ?? 0
+    );
+    els.myStatsVerdict.className = `lf-verdict my-4 is-${read.verdict}`;
+    els.myStatsVerdict.innerHTML = `
+      <p class="text-sm font-semibold text-white">${escapeHtml(read.label)}</p>
+      <p class="text-xs text-slate-400 mt-1">${escapeHtml(read.detail)}</p>`;
+    renderMyStatsChecks();
+  }
+
+  els.myStatsOutcomes.innerHTML =
+    outcomeTile('Booked', stat.booked, 'is-booked') +
+    outcomeTile('Lost', stat.lost, 'is-lost') +
+    outcomeTile('Still open', stat.pending, 'is-pending');
+
+  renderMyStatsLosses(stat);
+
+  const series = orgDailySeries(myStatsLoads, 30);
+  els.myStatsTrend.innerHTML = series.some(Boolean)
+    ? columnChart(series, { height: 120, label: 'Your calls per day' })
+    : '<p class="text-sm text-slate-500 text-center py-8">No calls in the last 30 days.</p>';
+}
+
+/**
+ * Per-step pass rates with the evidence behind each mark.
+ *
+ * The quote is the whole reason the rubric enforces one on every pass: it lets a
+ * dispatcher audit and dispute a mark against them by reading what the scorer
+ * saw. A miss carries the load to look at instead, since a miss has no quote.
+ */
+function renderMyStatsChecks() {
+  const rolled = aggregateChecks(myStatsLoads);
+  const byId = new Map(rolled.map((r) => [r.id, r]));
+  els.myStatsChecks.innerHTML = CALL_CHECKS.map(({ id, label }) => {
+    const row = byId.get(id);
+    if (!row || row.applicable === 0) {
+      return `<div class="flex items-baseline justify-between gap-3">
+        <span class="text-sm text-slate-400">${escapeHtml(label)}</span>
+        <span class="text-xs text-slate-600">Didn't come up</span>
+      </div>`;
+    }
+    const pct = Math.round(row.rate * 100);
+    const evidence = row.quote
+      ? `<p class="text-[11px] text-slate-500 italic mt-1 truncate" title="${escapeHtml(row.quote)}">"${escapeHtml(row.quote)}"</p>`
+      : row.example
+        ? `<p class="text-[11px] text-slate-600 mt-1 truncate">Missed on: ${escapeHtml(row.example)}</p>`
+        : '';
+    return `
+      <div>
+        <div class="flex items-baseline justify-between gap-3 mb-1">
+          <span class="text-sm text-slate-200">${escapeHtml(label)}</span>
+          <span class="text-xs tabular-nums shrink-0 ${pct >= 70 ? 'text-slate-400' : 'text-amber-400'}">
+            ${row.passed} of ${row.applicable}
+          </span>
+        </div>
+        <div class="lf-share-track"><div class="lf-share-fill${pct < 70 ? ' is-weak' : ''}" style="width:${pct}%"></div></div>
+        ${evidence}
+      </div>`;
+  }).join('');
+}
+
+function renderMyStatsLosses(stat) {
+  const entries = Object.entries(stat.lossReasons).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) {
+    els.myStatsLosses.innerHTML = stat.lost
+      ? `<p class="text-xs text-slate-500">${stat.lost} lost with no reason recorded.</p>`
+      : '<p class="text-xs text-slate-500">Nothing lost yet.</p>';
+    return;
+  }
+
+  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  const share = stat.controllableLossShare;
+  const summary =
+    share === null
+      ? ''
+      : `<p class="text-xs mb-2 ${share > 0.4 ? 'text-amber-400' : 'text-slate-500'}">
+          ${Math.round(share * 100)}% of your explained losses were down to the call itself${
+            share <= 0.4 ? ' — the rest were price, trucks or timing' : ''
+          }.
+        </p>`;
+
+  els.myStatsLosses.innerHTML =
+    summary +
+    entries
+      .map(([reason, count]) => {
+        const meta = LOSS_REASON_META[reason] || { label: reason, controllable: false };
+        return `
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="text-sm ${meta.controllable ? 'text-amber-300' : 'text-slate-300'} truncate">
+              ${escapeHtml(meta.label)}
+            </span>
+            <span class="text-xs text-slate-500 tabular-nums shrink-0">
+              ${count} · ${Math.round((count / total) * 100)}%
+            </span>
+          </div>`;
+      })
+      .join('');
 }
 
 function initAuth() {
@@ -2129,6 +2401,38 @@ function formatBookingRate(rate) {
   return `1 in ${(1 / rate).toFixed(1).replace(/\.0$/, '')}`;
 }
 
+/**
+ * The steps a call is reviewed against, in the order they happen.
+ *
+ * Labels only — the questions the model is actually asked live in
+ * supabase/functions/_shared/rubric.ts, which is Deno TypeScript and can't be
+ * imported here. Keep the ids in sync with CHECKS there.
+ */
+const CALL_CHECKS = [
+  { id: 'rate_asked', label: 'Asked the rate' },
+  { id: 'rate_negotiated', label: 'Negotiated' },
+  { id: 'pickup_confirmed', label: 'Pinned the pickup' },
+  { id: 'delivery_confirmed', label: 'Pinned the delivery' },
+  { id: 'appointment_type', label: 'Checked appointment vs FCFS' },
+  { id: 'freight_details', label: 'Got the freight details' },
+  { id: 'equipment_confirmed', label: 'Confirmed equipment' },
+  { id: 'accessorials_raised', label: 'Raised accessorials' },
+  { id: 'next_steps', label: 'Closed with next steps' },
+];
+
+/**
+ * The process score, or why there isn't one yet.
+ *
+ * Never renders a number below the sample floor. A score over four calls would
+ * be acted on exactly as confidently as a score over four hundred.
+ */
+function formatProcessScore(stat) {
+  if (stat.processScore === null) {
+    return stat.scoredCalls > 0 ? `${stat.scoredCalls}/${MIN_SCORED_CALLS}` : NO_VALUE;
+  }
+  return `${Math.round(stat.processScore)}%`;
+}
+
 function formatRelativeDay(ms) {
   if (!ms) return 'No loads yet';
   const days = Math.floor((Date.now() - ms) / (24 * 60 * 60 * 1000));
@@ -2276,6 +2580,7 @@ function renderAdminStatsTable(stats) {
         <span class="lf-stats-name">${escapeHtml(s.email)}</span>
         ${s.role ? `<span class="lf-admin-tag ml-1.5${s.role === 'owner' ? ' is-owner' : ''}">${escapeHtml(s.role)}</span>` : '<span class="lf-admin-tag ml-1.5">left org</span>'}
       </td>
+      <td class="py-2.5 px-3 text-right tabular-nums ${s.processScore !== null && s.processScore < 60 ? 'text-amber-400' : 'text-slate-300'}">${formatProcessScore(s)}</td>
       <td class="py-2.5 px-3 text-right text-white font-medium tabular-nums">${s.booked || NO_VALUE}</td>
       <td class="py-2.5 px-3 text-right text-slate-300 tabular-nums">${formatBookingRate(s.bookingRate)}</td>
       <td class="py-2.5 px-3 text-right text-slate-300 tabular-nums">${formatMoney(s.revenue, { compact: true })}</td>
@@ -2426,10 +2731,12 @@ function renderAdminDispatcher() {
   renderDispatcherActions(member);
 
   els.adminDispatcherKpis.innerHTML =
-    kpiTile('Booked', s.booked || NO_VALUE, `of ${s.total} calls`) +
-    kpiTile('Booking rate', formatBookingRate(s.bookingRate)) +
+    kpiTile('Call score', formatProcessScore(s), 'steps completed') +
+    kpiTile('Booking rate', formatBookingRate(s.bookingRate), `${s.booked} booked`) +
     kpiTile('Revenue booked', formatMoney(s.revenue, { compact: true })) +
     kpiTile('Avg rate per mile', formatRatePerMile(s.ratePerMile));
+
+  renderDispatcherScorecard(s, stats);
 
   const series = orgDailySeries(
     adminLoads.filter((l) => l.user_id === adminDispatcherId),
@@ -2446,8 +2753,110 @@ function renderAdminDispatcher() {
     outcomeTile('Lost', s.lost, 'is-lost') +
     outcomeTile('Still open', s.pending, 'is-pending');
 
+  renderDispatcherLosses(s);
   renderDispatcherLanes();
   renderDispatcherLoads();
+}
+
+/**
+ * The call scorecard: the verdict, then the per-step breakdown behind it.
+ *
+ * The breakdown is the point. "Your score is 68" is not something anyone can
+ * act on; "you asked about accessorials on 2 of 40 calls" is a Monday morning
+ * conversation with a specific fix.
+ */
+function renderDispatcherScorecard(stat, stats) {
+  const scored = adminDispatcherLoads.filter((l) => l.call_score !== null && l.call_score !== undefined);
+  els.adminDispatcherScoredCount.textContent = scored.length
+    ? `${scored.length} call${scored.length === 1 ? '' : 's'} reviewed`
+    : '';
+
+  // Below the sample floor there is no verdict and no breakdown — a per-step
+  // rate over four calls would be read as a fact when it is barely a hint.
+  if (stat.scoredCalls < MIN_SCORED_CALLS) {
+    els.adminDispatcherVerdict.classList.add('hidden');
+    els.adminDispatcherChecks.innerHTML = '';
+    els.adminDispatcherChecksEmpty.classList.remove('hidden');
+    els.adminDispatcherChecksEmpty.textContent = stat.scoredCalls
+      ? `${stat.scoredCalls} of ${MIN_SCORED_CALLS} calls reviewed. Too few to read anything into yet.`
+      : 'No calls reviewed yet. Reviews run automatically as calls are finished.';
+    return;
+  }
+  els.adminDispatcherChecksEmpty.classList.add('hidden');
+
+  const read = readPerformance(stat, stats);
+  els.adminDispatcherVerdict.className = `lf-verdict mb-4 is-${read.verdict}`;
+  els.adminDispatcherVerdict.innerHTML = `
+    <p class="text-sm font-semibold text-white">${escapeHtml(read.label)}</p>
+    <p class="text-xs text-slate-400 mt-1">${escapeHtml(read.detail)}</p>`;
+
+  const rolled = aggregateChecks(adminDispatcherLoads);
+  const byId = new Map(rolled.map((r) => [r.id, r]));
+  els.adminDispatcherChecks.innerHTML = CALL_CHECKS.map(({ id, label }) => {
+    const row = byId.get(id);
+    if (!row || row.applicable === 0) {
+      return `<div class="flex items-baseline justify-between gap-3">
+        <span class="text-sm text-slate-400">${escapeHtml(label)}</span>
+        <span class="text-xs text-slate-600">Didn't come up</span>
+      </div>`;
+    }
+    const pct = Math.round(row.rate * 100);
+    return `
+      <div>
+        <div class="flex items-baseline justify-between gap-3 mb-1">
+          <span class="text-sm text-slate-200">${escapeHtml(label)}</span>
+          <span class="text-xs tabular-nums shrink-0 ${pct >= 70 ? 'text-slate-400' : 'text-amber-400'}">
+            ${row.passed} of ${row.applicable}
+          </span>
+        </div>
+        <div class="lf-share-track"><div class="lf-share-fill${pct < 70 ? ' is-weak' : ''}" style="width:${pct}%"></div></div>
+      </div>`;
+  }).join('');
+}
+
+/**
+ * Why this dispatcher's loads were lost, ordered by how often.
+ *
+ * The controllable share is called out separately because it is the only line
+ * here that reflects on the person; everything else is the company's own
+ * pricing, capacity or timing showing up under someone's name.
+ */
+function renderDispatcherLosses(stat) {
+  const entries = Object.entries(stat.lossReasons).sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) {
+    els.adminDispatcherLosses.innerHTML = stat.lost
+      ? `<p class="text-xs text-slate-500">${stat.lost} lost with no reason recorded.</p>`
+      : '<p class="text-xs text-slate-500">Nothing lost yet.</p>';
+    return;
+  }
+
+  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  const share = stat.controllableLossShare;
+  const summary =
+    share === null
+      ? ''
+      : `<p class="text-xs mb-2 ${share > 0.4 ? 'text-amber-400' : 'text-slate-500'}">
+          ${Math.round(share * 100)}% of explained losses were down to the call itself${
+            share <= 0.4 ? ' — the rest were price, trucks or timing' : ''
+          }.
+        </p>`;
+
+  els.adminDispatcherLosses.innerHTML =
+    summary +
+    entries
+      .map(([reason, count]) => {
+        const meta = LOSS_REASON_META[reason] || { label: reason, controllable: false };
+        return `
+          <div class="flex items-baseline justify-between gap-3">
+            <span class="text-sm ${meta.controllable ? 'text-amber-300' : 'text-slate-300'} truncate">
+              ${escapeHtml(meta.label)}
+            </span>
+            <span class="text-xs text-slate-500 tabular-nums shrink-0">
+              ${count} · ${Math.round((count / total) * 100)}%
+            </span>
+          </div>`;
+      })
+      .join('');
 }
 
 function outcomeTile(label, value, cls) {
@@ -2802,6 +3211,11 @@ async function handleLogout() {
   currentLoadId = null;
   currentLoadOutcome = 'pending';
   loadsList = [];
+  // A shared dispatch-office machine is the normal case here, so the previous
+  // person's scorecard must not still be on screen for the next sign-in.
+  myStatsLoads = [];
+  myStatsPeers = null;
+  toggleMyStatsPanel(false);
   currentMembership = null;
   currentInvites = [];
   orgRoster = [];
@@ -2943,6 +3357,12 @@ window.addEventListener('DOMContentLoaded', () => {
     toggleHistoryPanel();
     if (!els.historyPanel.classList.contains('hidden')) {
       refreshLoadsList();
+    }
+  });
+  els.myStatsBtn.addEventListener('click', () => {
+    toggleMyStatsPanel();
+    if (!els.myStatsPanel.classList.contains('hidden')) {
+      refreshMyStats();
     }
   });
   els.historyShowCompleted.addEventListener('change', (e) => {

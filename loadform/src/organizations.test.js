@@ -8,7 +8,16 @@
  * renders as, and which average is taken.
  */
 
-import { aggregateDispatcherStats, orgDailySeries, topLanes, SPARK_DAYS } from './organizations.js';
+import {
+  aggregateDispatcherStats,
+  orgDailySeries,
+  topLanes,
+  readPerformance,
+  verdictFromMedians,
+  aggregateChecks,
+  SPARK_DAYS,
+  MIN_SCORED_CALLS,
+} from './organizations.js';
 
 let failures = 0;
 
@@ -161,6 +170,188 @@ check(lanes[0].lane, 'Amarillo, TX → Tulsa, OK', 'busiest lane first');
 check(lanes[0].count, 2, 'a zip code does not split a lane in two');
 check(lanes[0].booked, 1, 'lane tracks how many were booked');
 check(lanes.length, 2, 'a load missing one end is not a lane');
+
+// ─── Loss reasons ───────────────────────────────────────────────────────────
+
+const lossLoads = [
+  // Four losses that are the business's problem, one that is the dispatcher's.
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'rate_too_low', created_at: daysAgo(1) },
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'rate_too_low', created_at: daysAgo(2) },
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'no_truck', created_at: daysAgo(3) },
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'already_covered', created_at: daysAgo(4) },
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'lost_on_call', created_at: daysAgo(5) },
+  // A loss with no reason recorded at all.
+  { user_id: 'u1', outcome: 'lost', loss_reason: null, created_at: daysAgo(6) },
+];
+const lossStat = aggregateDispatcherStats(lossLoads, members).find((s) => s.userId === 'u1');
+
+check(lossStat.lostExternal, 4, 'losses outside the dispatcher\'s control are counted apart');
+check(lossStat.lostControllable, 1, 'only lost_on_call counts against the dispatcher');
+check(lossStat.lostUnexplained, 1, 'a loss with no reason is neither, and is counted separately');
+check(lossStat.lossReasons.rate_too_low, 2, 'reasons are tallied for the breakdown');
+// 1 of 5 explained losses — the unexplained one stays out of the denominator,
+// because silence is not evidence in either direction.
+check(lossStat.controllableLossShare, 1 / 5, 'unexplained losses do not dilute the share');
+
+// ─── Process score ──────────────────────────────────────────────────────────
+
+function scoredLoads(userId, scores) {
+  return scores.map((call_score, i) => ({
+    user_id: userId,
+    outcome: 'booked',
+    call_score,
+    created_at: daysAgo(i + 1),
+  }));
+}
+
+const thin = aggregateDispatcherStats(scoredLoads('u1', [90, 80, 70]), members).find(
+  (s) => s.userId === 'u1'
+);
+check(thin.scoredCalls, 3, 'scored calls are counted');
+check(
+  thin.processScore,
+  null,
+  `a process score is withheld below ${MIN_SCORED_CALLS} reviewed calls`
+);
+
+const enough = aggregateDispatcherStats(
+  scoredLoads('u1', new Array(MIN_SCORED_CALLS).fill(80)),
+  members
+).find((s) => s.userId === 'u1');
+check(enough.processScore, 80, 'a process score appears once there are enough calls');
+
+// An unscored call must not be averaged in as a zero.
+const withSkips = aggregateDispatcherStats(
+  [
+    ...scoredLoads('u1', new Array(MIN_SCORED_CALLS).fill(80)),
+    { user_id: 'u1', outcome: 'lost', call_score: null, created_at: daysAgo(1) },
+  ],
+  members
+).find((s) => s.userId === 'u1');
+check(withSkips.processScore, 80, 'an unscored call is skipped, not counted as zero');
+
+// ─── The quadrant reading ───────────────────────────────────────────────────
+
+function peer(userId, email, processScore, bookingRate) {
+  return { userId, email, role: 'dispatcher', processScore, bookingRate };
+}
+const peers = [
+  peer('a', 'a@x.com', 90, 0.4), // good process, good outcome
+  peer('b', 'b@x.com', 88, 0.1), // good process, bad outcome
+  peer('c', 'c@x.com', 40, 0.38), // bad process, good outcome
+  peer('d', 'd@x.com', 35, 0.08), // bad process, bad outcome
+];
+
+check(readPerformance(peers[0], peers).verdict, 'performing', 'strong on both reads as performing');
+check(
+  readPerformance(peers[1], peers).verdict,
+  'not_their_fault',
+  'good calls that do not land point at the business, not the person'
+);
+check(
+  readPerformance(peers[2], peers).verdict,
+  'easy_freight',
+  'winning while skipping steps is flagged as easy freight'
+);
+check(
+  readPerformance(peers[3], peers).verdict,
+  'needs_coaching',
+  'weak on both points at the call itself'
+);
+check(
+  readPerformance(peer('e', 'e@x.com', null, 0.3), peers).verdict,
+  'unknown',
+  'no reading without a process score'
+);
+check(
+  readPerformance(peers[0], [peers[0]]).verdict,
+  'unknown',
+  'no reading without peers to compare against'
+);
+
+// ─── The same reading from server-supplied medians ──────────────────────────
+//
+// A dispatcher cannot read peer loads (RLS is admin-only), so their own
+// scorecard reads against medians from the peer_medians RPC instead of a peer
+// array. The verdict must come out identical either way, or a dispatcher and
+// their owner would see different readings of the same person.
+
+const medProcess = 64; // median of [90, 88, 40, 35]
+const medBooking = 0.24; // median of [0.4, 0.1, 0.38, 0.08]
+
+check(
+  verdictFromMedians(peers[0], medProcess, medBooking, 4).verdict,
+  readPerformance(peers[0], peers).verdict,
+  'medians give the same verdict as the peer array — performing'
+);
+check(
+  verdictFromMedians(peers[1], medProcess, medBooking, 4).verdict,
+  readPerformance(peers[1], peers).verdict,
+  'medians give the same verdict as the peer array — not their fault'
+);
+check(
+  verdictFromMedians(peers[2], medProcess, medBooking, 4).verdict,
+  readPerformance(peers[2], peers).verdict,
+  'medians give the same verdict as the peer array — easy freight'
+);
+check(
+  verdictFromMedians(peers[3], medProcess, medBooking, 4).verdict,
+  readPerformance(peers[3], peers).verdict,
+  'medians give the same verdict as the peer array — needs coaching'
+);
+check(
+  verdictFromMedians(peers[0], medProcess, medBooking, 1).verdict,
+  'unknown',
+  'a lone dispatcher has no team to be read against'
+);
+check(
+  verdictFromMedians(peer('e', 'e@x.com', null, 0.3), medProcess, medBooking, 4).verdict,
+  'unknown',
+  'no reading from medians without a process score'
+);
+// The RPC returning nothing must degrade to "no comparison", never to a verdict
+// computed against null — which would silently read as "below the team".
+check(
+  verdictFromMedians(peers[0], null, null, 0).verdict,
+  'unknown',
+  'a failed median lookup withholds the reading rather than inventing one'
+);
+
+// ─── Per-step rollup ────────────────────────────────────────────────────────
+
+const checkLoads = [
+  {
+    title: 'Load A',
+    call_checks: {
+      rate_asked: { result: 'pass', quote: 'what does it pay' },
+      accessorials_raised: { result: 'miss', quote: '' },
+      rate_negotiated: { result: 'na', quote: '' },
+    },
+  },
+  {
+    title: 'Load B',
+    call_checks: {
+      rate_asked: { result: 'pass', quote: 'how much' },
+      accessorials_raised: { result: 'miss', quote: '' },
+      rate_negotiated: { result: 'pass', quote: 'I need more than that' },
+    },
+  },
+  { title: 'Unscored load', call_checks: null },
+];
+const rolled = aggregateChecks(checkLoads);
+const byId = (id) => rolled.find((r) => r.id === id);
+check(byId('rate_asked').rate, 1, 'a step passed every time rolls up to 100%');
+check(byId('accessorials_raised').rate, 0, 'a step never done rolls up to 0%');
+check(byId('rate_negotiated').applicable, 1, 'an N/A call is excluded from that step');
+check(byId('rate_negotiated').rate, 1, 'and the remaining call decides the rate');
+check(byId('accessorials_raised').example, 'Load A', 'a missed step cites a call to look at');
+check(rolled.length, 3, 'unscored loads contribute nothing');
+
+// The evidence a dispatcher reads to dispute a mark against them. A pass with
+// no quote was already downgraded to a miss by the scorer, so a quote here is
+// always grounded in the transcript.
+check(byId('rate_asked').quote, 'what does it pay', 'a passed step keeps the words that earned it');
+check(byId('accessorials_raised').quote, '', 'a step never passed has no quote to show');
 
 // ─── Result ─────────────────────────────────────────────────────────────────
 

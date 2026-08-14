@@ -158,7 +158,7 @@ export async function fetchOrgLoads(supabase, orgId) {
   if (!supabase || !orgId) return [];
   const { data, error } = await supabase
     .from('loads')
-    .select('user_id, status, outcome, rate_usd, miles, created_at')
+    .select('user_id, status, outcome, loss_reason, rate_usd, miles, call_score, created_at')
     .eq('org_id', orgId);
   if (error) {
     console.error('fetchOrgLoads failed:', error);
@@ -239,8 +239,33 @@ function emptyStat(userId, email, role) {
     revenueWithMiles: 0,
     daily: new Array(SPARK_DAYS).fill(0),
     lastActiveAt: null,
+    // Process side: how the calls were run, independent of whether they landed.
+    scoreSum: 0,
+    scoredCalls: 0,
+    // Losses split by whether the reason says anything about the dispatcher.
+    lostControllable: 0,
+    lostExternal: 0,
+    lostUnexplained: 0,
+    lossReasons: {},
   };
 }
+
+/**
+ * Reasons that reflect on the dispatcher rather than on the business.
+ *
+ * Kept in step with LOSS_REASON_META in loads.js — duplicated rather than
+ * imported because this module is pure aggregation over rows and importing the
+ * persistence layer for one constant would invert the dependency.
+ */
+const CONTROLLABLE_LOSS_REASONS = new Set(['lost_on_call']);
+
+/**
+ * Calls a dispatcher must have reviewed before a process score is shown.
+ *
+ * A score over three calls is noise, and noise attached to someone's job is
+ * worse than no number: an owner shown "48%" on four calls will act on it.
+ */
+export const MIN_SCORED_CALLS = 10;
 
 /**
  * Roll raw org loads up into one row per dispatcher.
@@ -300,10 +325,29 @@ export function aggregateDispatcherStats(loads, members) {
       stat.daily[SPARK_DAYS - 1 - day] += 1;
     }
 
+    // Null-checked before the cast: Number(null) is 0, and a call that was
+    // never reviewed averaged in as a zero would drag a dispatcher's score down
+    // for every short call and every provider hiccup.
+    if (load.call_score !== null && load.call_score !== undefined) {
+      const score = Number(load.call_score);
+      if (Number.isFinite(score)) {
+        stat.scoreSum += score;
+        stat.scoredCalls += 1;
+      }
+    }
+
     const outcome = load.outcome || 'pending';
     if (outcome === 'booked') stat.booked += 1;
     else if (outcome === 'lost') stat.lost += 1;
     else stat.pending += 1;
+
+    if (outcome === 'lost') {
+      const reason = load.loss_reason || null;
+      if (!reason) stat.lostUnexplained += 1;
+      else if (CONTROLLABLE_LOSS_REASONS.has(reason)) stat.lostControllable += 1;
+      else stat.lostExternal += 1;
+      if (reason) stat.lossReasons[reason] = (stat.lossReasons[reason] || 0) + 1;
+    }
 
     if (outcome !== 'booked') continue;
     if (ageMs <= 7 * DAY_MS) stat.booked7d += 1;
@@ -327,6 +371,17 @@ export function aggregateDispatcherStats(loads, members) {
     stat.bookingRate = resolved > 0 ? stat.booked / resolved : null;
     stat.ratePerMile =
       stat.milesTotal > 0 ? stat.revenueWithMiles / stat.milesTotal : null;
+
+    // Withheld below the sample floor rather than shown with a caveat: a number
+    // on screen gets acted on whatever the footnote says.
+    stat.processScore =
+      stat.scoredCalls >= MIN_SCORED_CALLS ? stat.scoreSum / stat.scoredCalls : null;
+
+    // Of the losses that carry a reason, how many were the dispatcher's to
+    // control. Unexplained losses are excluded from the denominator — silence
+    // is not evidence either way.
+    const explained = stat.lostControllable + stat.lostExternal;
+    stat.controllableLossShare = explained > 0 ? stat.lostControllable / explained : null;
   }
 
   // Ranked by money booked, not by calls made. Sorting on volume puts whoever
@@ -343,6 +398,142 @@ export function aggregateDispatcherStats(loads, members) {
     if (!a.role !== !b.role) return a.role ? -1 : 1;
     return b.revenue - a.revenue || b.booked - a.booked || b.total - a.total;
   });
+}
+
+/**
+ * Read a dispatcher against their own team.
+ *
+ * Process (did they run the call) and outcome (did it land) are held apart and
+ * compared separately, because the interesting answer lives in the disagreement
+ * between them:
+ *
+ *                    high outcome        low outcome
+ *   high process     performing          not their fault — look at rates,
+ *                                        trucks and lanes before the person
+ *   low process      getting away with   coach the call itself
+ *                    easy freight
+ *
+ * Merging the two into a single number destroys exactly this reading, which is
+ * the one an owner cannot get any other way.
+ *
+ * Compared against the team median rather than a fixed threshold on purpose:
+ * there is no industry booking rate that is right for every carrier, and a
+ * hardcoded one would be wrong for half of them. A dispatcher is measured
+ * against the people working the same freight.
+ */
+export function readPerformance(stat, stats) {
+  if (stat.processScore === null || stat.bookingRate === null) {
+    return verdictFromMedians(stat, null, null, 0);
+  }
+
+  const peers = stats.filter(
+    (s) => s.role && s.processScore !== null && s.bookingRate !== null
+  );
+  const medianProcessScore = peers.length >= 2 ? median(peers.map((s) => s.processScore)) : null;
+  const medianBookingRate = peers.length >= 2 ? median(peers.map((s) => s.bookingRate)) : null;
+  return verdictFromMedians(stat, medianProcessScore, medianBookingRate, peers.length);
+}
+
+/**
+ * The verdict from two medians rather than a full peer array.
+ *
+ * Extracted from readPerformance so a dispatcher's own scorecard can read
+ * against server-provided medians (peer_medians RPC) without the client ever
+ * holding peer rows — which RLS would not let it see anyway. The labels and the
+ * four quadrants are identical to the admin reading, so a dispatcher and an
+ * owner never see different verdicts for the same person.
+ */
+export function verdictFromMedians(stat, medianProcessScore, medianBookingRate, peerCount) {
+  if (stat.processScore === null || stat.bookingRate === null) {
+    return {
+      verdict: 'unknown',
+      label: 'Not enough reviewed calls yet',
+      detail: `A read needs at least ${MIN_SCORED_CALLS} scored calls and some resolved outcomes.`,
+    };
+  }
+
+  if (peerCount < 2 || medianProcessScore === null || medianBookingRate === null) {
+    return {
+      verdict: 'unknown',
+      label: 'No one to compare against yet',
+      detail: 'This reading compares dispatchers with each other, so it needs at least two.',
+    };
+  }
+
+  const highProcess = stat.processScore >= medianProcessScore;
+  const highOutcome = stat.bookingRate >= medianBookingRate;
+
+  if (highProcess && highOutcome) {
+    return {
+      verdict: 'performing',
+      label: 'Running good calls and winning them',
+      detail: 'Above the team on both how the call is run and how often it lands.',
+    };
+  }
+  if (highProcess && !highOutcome) {
+    return {
+      verdict: 'not_their_fault',
+      label: 'Running good calls that are not landing',
+      detail:
+        'They work the call as well as anyone and still lose more. Look at the rates they are ' +
+        'given, the trucks available to them, and the lanes they are handed before looking at them.',
+    };
+  }
+  if (!highProcess && highOutcome) {
+    return {
+      verdict: 'easy_freight',
+      label: 'Winning without working the call',
+      detail:
+        'Landing loads while skipping steps. Usually easier freight rather than better selling — ' +
+        'and the skipped steps are where detention and lumper costs get discovered later.',
+    };
+  }
+  return {
+    verdict: 'needs_coaching',
+    label: 'The call itself is where to start',
+    detail: 'Below the team on both. The step breakdown below says which parts to work on.',
+  };
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/**
+ * Roll per-call check results into a per-step pass rate for one dispatcher.
+ *
+ * This is what makes the score coachable: "you are not asking about detention"
+ * is something a person can act on, where "your score is 68" is not.
+ */
+export function aggregateChecks(loads) {
+  const byCheck = new Map();
+  for (const load of loads || []) {
+    const checks = load.call_checks;
+    if (!checks || typeof checks !== 'object') continue;
+    for (const [id, entry] of Object.entries(checks)) {
+      const result = entry?.result;
+      if (result !== 'pass' && result !== 'miss') continue; // 'na' is not scored
+      const row = byCheck.get(id) || { id, passed: 0, applicable: 0, example: '', quote: '' };
+      row.applicable += 1;
+      if (result === 'pass') {
+        row.passed += 1;
+        // The verbatim quote that justified the first pass — the evidence a
+        // dispatcher reads to confirm or dispute a mark against them. A pass
+        // with no quote was downgraded to a miss by the scorer, so this is
+        // always grounded in the transcript.
+        if (!row.quote && entry.quote) row.quote = entry.quote;
+      } else if (!row.example) {
+        row.example = load.title || '';
+      }
+      byCheck.set(id, row);
+    }
+  }
+  return Array.from(byCheck.values()).map((r) => ({
+    ...r,
+    rate: r.applicable > 0 ? r.passed / r.applicable : null,
+  }));
 }
 
 /**
@@ -402,7 +593,7 @@ export async function fetchDispatcherLoads(supabase, orgId, userId, limit = 100)
   const { data, error } = await supabase
     .from('loads')
     .select(
-      'id, title, status, outcome, rate, rate_usd, miles, pickup_location, delivery_location, equipment_type, commodity, created_at'
+      'id, title, status, outcome, loss_reason, loss_note, call_score, call_checks, call_score_skipped, rate, rate_usd, miles, pickup_location, delivery_location, equipment_type, commodity, created_at'
     )
     .eq('org_id', orgId)
     .eq('user_id', userId)
