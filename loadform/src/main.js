@@ -71,7 +71,9 @@ import {
   readPerformance,
   verdictFromMedians,
   aggregateChecks,
+  aggregateLossReasons,
   MIN_SCORED_CALLS,
+  MIN_EXPLAINED_LOSSES,
 } from './organizations.js';
 
 // ─── Tauri Invoke ──────────────────────────────────────────────────────────
@@ -1724,42 +1726,83 @@ function renderMyStatsChecks() {
   }).join('');
 }
 
-function renderMyStatsLosses(stat) {
-  const entries = Object.entries(stat.lossReasons).sort((a, b) => b[1] - a[1]);
-  if (entries.length === 0) {
-    els.myStatsLosses.innerHTML = stat.lost
-      ? `<p class="text-xs text-slate-500">${stat.lost} lost with no reason recorded.</p>`
+/**
+ * Why this dispatcher's loads were lost, with the words behind each reason.
+ *
+ * One renderer for both readings. The owner's copy and the dispatcher's copy
+ * were separate near-identical functions, which is how they came to disagree —
+ * only one of them ever learned about the evidence quotes. They differ in two
+ * words of phrasing and nothing else, so that is all `possessive` carries.
+ *
+ * `loads` is optional: the rows carrying loss_reason_quote, when the caller has
+ * them. Without it the breakdown still renders, just without evidence.
+ */
+function lossBreakdownHtml(stat, loads = [], { possessive = false } = {}) {
+  const rows = aggregateLossReasons(loads);
+  const counted = rows.length
+    ? rows
+    : // Fall back to the aggregate tally when the caller has no rows to hand.
+      // Same numbers, no quotes.
+      Object.entries(stat.lossReasons)
+        .sort((a, b) => b[1] - a[1])
+        .map(([reason, count]) => ({ reason, count, quote: '' }));
+
+  if (counted.length === 0) {
+    return stat.lost
+      ? `<p class="text-xs text-slate-500">${stat.lost} lost with no reason found in the call.</p>`
       : '<p class="text-xs text-slate-500">Nothing lost yet.</p>';
-    return;
   }
 
-  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  const total = counted.reduce((sum, r) => sum + r.count, 0);
   const share = stat.controllableLossShare;
+  const whose = possessive ? 'your explained losses' : 'explained losses';
+
+  // Below the floor the count is shown instead of the percentage. A dispatcher
+  // with one explained loss reads 0% or 100% purely on which call landed first,
+  // and both look like findings.
   const summary =
     share === null
-      ? ''
+      ? `<p class="text-xs mb-2 text-slate-600">
+          ${stat.explainedLosses} of ${MIN_EXPLAINED_LOSSES} losses explained so far — too few to say
+          whether the call is the problem.
+        </p>`
       : `<p class="text-xs mb-2 ${share > 0.4 ? 'text-amber-400' : 'text-slate-500'}">
-          ${Math.round(share * 100)}% of your explained losses were down to the call itself${
+          ${Math.round(share * 100)}% of ${whose} were down to the call itself${
             share <= 0.4 ? ' — the rest were price, trucks or timing' : ''
           }.
         </p>`;
 
-  els.myStatsLosses.innerHTML =
+  return (
     summary +
-    entries
-      .map(([reason, count]) => {
+    counted
+      .map(({ reason, count, quote }) => {
         const meta = LOSS_REASON_META[reason] || { label: reason, controllable: false };
+        // lost_on_call is derived from missed steps rather than quoted, so it
+        // says where it came from instead of pretending to have words.
+        const evidence = quote
+          ? `<p class="lf-loss-quote">“${escapeHtml(quote)}”</p>`
+          : reason === 'lost_on_call'
+            ? '<p class="lf-loss-quote is-derived">No rate pushback and no next step agreed</p>'
+            : '';
         return `
-          <div class="flex items-baseline justify-between gap-3">
-            <span class="text-sm ${meta.controllable ? 'text-amber-300' : 'text-slate-300'} truncate">
-              ${escapeHtml(meta.label)}
-            </span>
-            <span class="text-xs text-slate-500 tabular-nums shrink-0">
-              ${count} · ${Math.round((count / total) * 100)}%
-            </span>
+          <div class="mb-2">
+            <div class="flex items-baseline justify-between gap-3">
+              <span class="text-sm ${meta.controllable ? 'text-amber-300' : 'text-slate-300'} truncate">
+                ${escapeHtml(meta.label)}
+              </span>
+              <span class="text-xs text-slate-500 tabular-nums shrink-0">
+                ${count} · ${Math.round((count / total) * 100)}%
+              </span>
+            </div>
+            ${evidence}
           </div>`;
       })
-      .join('');
+      .join('')
+  );
+}
+
+function renderMyStatsLosses(stat) {
+  els.myStatsLosses.innerHTML = lossBreakdownHtml(stat, myStatsLoads, { possessive: true });
 }
 
 function initAuth() {
@@ -2894,43 +2937,15 @@ function renderDispatcherScorecard(stat, stats) {
  * The controllable share is called out separately because it is the only line
  * here that reflects on the person; everything else is the company's own
  * pricing, capacity or timing showing up under someone's name.
+ *
+ * The owner sees the same evidence quotes the dispatcher does, from the same
+ * renderer. Deliberately not a summary for the person being judged and the raw
+ * words for the person judging: an owner who cannot see what the reason was
+ * inferred from is being asked to trust it, and the dispatcher on the other end
+ * of that conversation can already read every line of it.
  */
 function renderDispatcherLosses(stat) {
-  const entries = Object.entries(stat.lossReasons).sort((a, b) => b[1] - a[1]);
-  if (entries.length === 0) {
-    els.adminDispatcherLosses.innerHTML = stat.lost
-      ? `<p class="text-xs text-slate-500">${stat.lost} lost with no reason recorded.</p>`
-      : '<p class="text-xs text-slate-500">Nothing lost yet.</p>';
-    return;
-  }
-
-  const total = entries.reduce((sum, [, n]) => sum + n, 0);
-  const share = stat.controllableLossShare;
-  const summary =
-    share === null
-      ? ''
-      : `<p class="text-xs mb-2 ${share > 0.4 ? 'text-amber-400' : 'text-slate-500'}">
-          ${Math.round(share * 100)}% of explained losses were down to the call itself${
-            share <= 0.4 ? ' — the rest were price, trucks or timing' : ''
-          }.
-        </p>`;
-
-  els.adminDispatcherLosses.innerHTML =
-    summary +
-    entries
-      .map(([reason, count]) => {
-        const meta = LOSS_REASON_META[reason] || { label: reason, controllable: false };
-        return `
-          <div class="flex items-baseline justify-between gap-3">
-            <span class="text-sm ${meta.controllable ? 'text-amber-300' : 'text-slate-300'} truncate">
-              ${escapeHtml(meta.label)}
-            </span>
-            <span class="text-xs text-slate-500 tabular-nums shrink-0">
-              ${count} · ${Math.round((count / total) * 100)}%
-            </span>
-          </div>`;
-      })
-      .join('');
+  els.adminDispatcherLosses.innerHTML = lossBreakdownHtml(stat, adminDispatcherLoads);
 }
 
 function outcomeTile(label, value, cls) {
