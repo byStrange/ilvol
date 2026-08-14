@@ -100,6 +100,28 @@ const noMiles = aggregateDispatcherStats(
 check(noMiles.ratePerMile, 2, 'a load with no mileage is excluded from rate per mile');
 check(noMiles.revenue, 7000, 'but it still counts toward revenue');
 
+// ─── Ranking ────────────────────────────────────────────────────────────────
+
+// Dave makes the most calls (4) and books the least money. Ranking by volume
+// would put him first, which is exactly the misreading the table exists to
+// prevent — so revenue leads.
+check(stats[0].email, 'marcus@acme.com', 'ranked by revenue booked, not call count');
+check(
+  stats.findIndex((s) => s.email === 'dave@acme.com') >
+    stats.findIndex((s) => s.email === 'marcus@acme.com'),
+  true,
+  'the busiest dialler does not outrank the better closer'
+);
+check(
+  stats.findIndex((s) => s.email === 'new@acme.com') <
+    stats.findIndex((s) => s.email === 'Former member'),
+  true,
+  'a current member with no loads still outranks the departed bucket'
+);
+// The former bucket booked $5,000 — more than anyone current — and still sorts
+// last, because it is an aggregate of people who have left, not a person.
+check(stats[stats.length - 1].email, 'Former member', 'departed members always rank last');
+
 // ─── Former members ─────────────────────────────────────────────────────────
 
 check(former.total, 1, "a departed member's loads are kept under a former bucket");

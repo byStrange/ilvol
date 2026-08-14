@@ -383,6 +383,22 @@
           </header>
 
           <div class="lf-admin-body">
+            <!--
+              Demo banner. Amber and unmissable on purpose: every figure below
+              it is invented, and a screenshot of fake revenue that isn't
+              labelled as fake is the kind of thing that ends up in a pitch deck.
+            -->
+            <div id="admin-demo-banner" class="lf-demo-banner mb-4 hidden">
+              <span class="lf-demo-dot"></span>
+              <span class="flex-1 min-w-0">
+                <span class="block text-sm font-semibold text-amber-200">Sample data</span>
+                <span id="admin-demo-detail" class="block text-xs text-amber-200/70"></span>
+              </span>
+              <button id="admin-demo-exit" type="button" class="lf-btn py-1.5 px-3 bg-amber-500/20 hover:bg-amber-500/30 text-amber-100 text-xs font-medium shrink-0">
+                Show real data
+              </button>
+            </div>
+
             <p id="admin-error" class="text-sm text-red-400 mb-4 hidden"></p>
 
             <!-- Overview -->
@@ -624,6 +640,26 @@
                 </p>
                 <div id="admin-billing-preview" class="text-sm text-slate-300"></div>
                 <p class="text-xs text-slate-600 mt-3">Consolidated invoicing isn't switched on yet — seat counts shown for reference.</p>
+              </div>
+
+              <!--
+                Kept in Settings rather than behind a build flag so the console
+                can be demoed from a real install without a rebuild — and so
+                turning it off is always one click from wherever you are.
+              -->
+              <div class="glass glass-lit rounded-2xl p-5 mb-5 max-w-lg">
+                <h2 class="text-sm font-semibold text-white mb-1">Sample data</h2>
+                <p class="text-xs text-slate-500 mb-3">
+                  Fills the console with two months of invented traffic for five dispatchers, to see how it reads
+                  with a full team. Your real loads are untouched and come back the moment you switch this off.
+                </p>
+                <label class="flex items-center gap-2 cursor-pointer select-none" for="admin-demo-toggle">
+                  <span class="lf-toggle-switch">
+                    <input id="admin-demo-toggle" type="checkbox" />
+                    <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
+                  </span>
+                  <span class="text-sm text-slate-300">Preview with sample data</span>
+                </label>
               </div>
 
               <div class="glass glass-lit rounded-2xl p-5 max-w-lg">

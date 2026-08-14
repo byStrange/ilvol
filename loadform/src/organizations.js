@@ -329,7 +329,20 @@ export function aggregateDispatcherStats(loads, members) {
       stat.milesTotal > 0 ? stat.revenueWithMiles / stat.milesTotal : null;
   }
 
-  return Array.from(byUser.values()).sort((a, b) => b.total - a.total);
+  // Ranked by money booked, not by calls made. Sorting on volume puts whoever
+  // dials the most at the top, which is precisely the reading this table exists
+  // to correct — the busiest dispatcher on a team is often the one converting
+  // least. Booked count breaks ties before call count, so someone with no rates
+  // captured yet still ranks on results rather than effort.
+  //
+  // Departed members always sort last, whatever they booked. The bucket is an
+  // aggregate of everyone who has left rather than a person, so ranking it
+  // among the current team would put a name nobody can act on at the top of a
+  // performance table.
+  return Array.from(byUser.values()).sort((a, b) => {
+    if (!a.role !== !b.role) return a.role ? -1 : 1;
+    return b.revenue - a.revenue || b.booked - a.booked || b.total - a.total;
+  });
 }
 
 /**

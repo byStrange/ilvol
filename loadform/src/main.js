@@ -40,6 +40,13 @@ import {
 } from './loads.js';
 import { startTutorial } from './tutorial.js';
 import {
+  demoMembers,
+  demoOrgLoads,
+  demoRecentLoads,
+  demoDispatcherLoads,
+  demoSummary,
+} from './demo-data.js';
+import {
   createOrganization,
   fetchMyMembership,
   fetchMyInvites,
@@ -192,6 +199,10 @@ let adminRecentLoads = []; // detailed recent tail, for the activity feed
 let adminActivityFilter = 'all'; // 'all' | a dispatcher user_id
 let adminDispatcherId = null; // whose report is open, null when none
 let adminDispatcherLoads = []; // that dispatcher's loads, fetched on demand
+// Demo mode substitutes invented data at the fetch boundary only — see
+// demo-data.js. Persisted so it survives a reload while you're looking at it.
+const DEMO_STORAGE_KEY = 'loadform.demoData';
+let demoMode = readDemoMode();
 let adminCreateInFlight = false; // guards against a double-submit minting two accounts
 let adminCredentials = null; // { email, password } — the only copy, held for the copy button
 const MODE_STORAGE_KEY = 'loadform.appMode';
@@ -300,6 +311,10 @@ const els = {
   adminSectionSub: document.getElementById('admin-section-sub'),
   adminRefreshBtn: document.getElementById('admin-refresh-btn'),
   adminError: document.getElementById('admin-error'),
+  adminDemoBanner: document.getElementById('admin-demo-banner'),
+  adminDemoDetail: document.getElementById('admin-demo-detail'),
+  adminDemoExit: document.getElementById('admin-demo-exit'),
+  adminDemoToggle: document.getElementById('admin-demo-toggle'),
   adminTeamCount: document.getElementById('admin-team-count'),
   adminWinMinimize: document.getElementById('admin-win-minimize'),
   adminWinMaximize: document.getElementById('admin-win-maximize'),
@@ -1914,6 +1929,7 @@ function setAppMode(mode, { persist = false } = {}) {
     hideSettingsModal();
     hideOrgModal();
     setAdminSection(adminSection); // re-assert nav/panel pairing on re-entry
+    renderDemoBanner();
     refreshAdminConsole();
   }
 }
@@ -1980,10 +1996,68 @@ function setAdminSection(section) {
   els.adminSectionSub.textContent = ADMIN_SECTIONS[section].sub;
 }
 
+// ─── Demo mode ──────────────────────────────────────────────────────────────
+
+function readDemoMode() {
+  try {
+    return localStorage.getItem(DEMO_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setDemoMode(on) {
+  demoMode = on;
+  try {
+    localStorage.setItem(DEMO_STORAGE_KEY, on ? '1' : '0');
+  } catch {
+    // Storage disabled: the choice just won't survive a restart.
+  }
+  // Whichever dispatcher was open belongs to the other dataset.
+  if (adminSection === 'dispatcher') setAdminSection('overview');
+  renderDemoBanner();
+  refreshAdminConsole();
+}
+
+function renderDemoBanner() {
+  if (!els.adminDemoBanner) return;
+  els.adminDemoBanner.classList.toggle('hidden', !demoMode);
+  els.adminDemoBanner.classList.toggle('flex', demoMode);
+  if (els.adminDemoToggle) els.adminDemoToggle.checked = demoMode;
+  if (demoMode) {
+    const { members, loads, days } = demoSummary();
+    els.adminDemoDetail.textContent =
+      `${loads.toLocaleString()} invented loads from ${members} dispatchers over ${days} days. ` +
+      `Nothing here is real, and none of it is saved.`;
+  }
+}
+
+/**
+ * Refuse a write while demo mode is on.
+ *
+ * The roster on screen belongs to nobody: its ids are made up, so a remove or
+ * a password reset would either fail confusingly or, worse, address a real row
+ * by coincidence. Better to say plainly why the button did nothing.
+ */
+function blockedByDemo() {
+  if (!demoMode) return false;
+  showAdminError('Switch off sample data in Settings to make changes to your real team.');
+  return true;
+}
+
 /** Re-fetch everything the console shows, then repaint all four panels. */
 async function refreshAdminConsole() {
   if (!isOrgAdmin()) return;
   hideAdminError();
+
+  if (demoMode) {
+    adminLoads = demoOrgLoads();
+    orgRoster = demoMembers();
+    adminRecentLoads = demoRecentLoads();
+    renderAdminConsole();
+    return;
+  }
+
   const orgId = currentMembership.org_id;
   const [loads, members, recent] = await Promise.all([
     fetchOrgLoads(supabase, orgId),
@@ -2317,11 +2391,14 @@ async function openDispatcher(userId) {
   adminDispatcherLoads = [];
   setAdminSection('dispatcher');
   renderAdminDispatcher(); // paint the header immediately, from cached aggregates
-  adminDispatcherLoads = await fetchDispatcherLoads(
-    supabase,
-    currentMembership.org_id,
-    userId
-  );
+  adminDispatcherLoads = demoMode
+    ? demoDispatcherLoads(userId, DISPATCHER_LOAD_LIMIT)
+    : await fetchDispatcherLoads(
+        supabase,
+        currentMembership.org_id,
+        userId,
+        DISPATCHER_LOAD_LIMIT
+      );
   // Guard against a second dispatcher being opened while this fetch was in
   // flight — the slower response must not overwrite the newer page.
   if (adminDispatcherId !== userId) return;
@@ -2424,11 +2501,17 @@ function renderDispatcherLanes() {
     .join('');
 }
 
+const DISPATCHER_LOAD_LIMIT = 100;
+
 function renderDispatcherLoads() {
   const loads = adminDispatcherLoads;
-  els.adminDispatcherLoadCount.textContent = loads.length
-    ? `${loads.length} most recent`
-    : '';
+  // "100 most recent" only when the list is actually truncated — saying it of a
+  // complete list implies there is more to see when there isn't.
+  els.adminDispatcherLoadCount.textContent = !loads.length
+    ? ''
+    : loads.length >= DISPATCHER_LOAD_LIMIT
+      ? `${loads.length} most recent`
+      : `${loads.length} load${loads.length === 1 ? '' : 's'}`;
   els.adminDispatcherLoadsEmpty.classList.toggle('hidden', loads.length > 0);
   els.adminDispatcherLoads.innerHTML = '';
 
@@ -2438,9 +2521,13 @@ function renderDispatcherLoads() {
       Number(load.rate_usd) > 0 && Number(load.miles) > 0
         ? `${formatRatePerMile(load.rate_usd / load.miles)}/mi`
         : '';
-    const meta = [lane || 'No lane captured', load.equipment_type, load.miles ? `${load.miles} mi` : '']
-      .filter(Boolean)
-      .join(' · ');
+    // The title is generated from the lane, so repeating it underneath would
+    // spend the row's second line saying the same thing twice. This line
+    // carries what the title can't.
+    const meta =
+      [load.commodity, load.equipment_type, load.miles ? `${load.miles} mi` : '']
+        .filter(Boolean)
+        .join(' · ') || (lane ? '' : 'No lane captured');
 
     const row = document.createElement('div');
     row.className = 'lf-admin-row';
@@ -2510,6 +2597,7 @@ async function handleAdminCreateMemberSubmit(e) {
   hideAdminError();
   hideAdminCredentials();
   if (!isOrgAdmin() || adminCreateInFlight) return;
+  if (blockedByDemo()) return;
 
   const email = els.adminCreateEmail.value.trim();
   if (!email) return;
@@ -2622,6 +2710,7 @@ async function handleAdminRosterClick(e) {
   const btn = e.target.closest('[data-admin-action]');
   if (!btn) return;
   hideAdminError();
+  if (blockedByDemo()) return;
   const memberId = btn.dataset.memberId;
 
   if (btn.dataset.adminAction === 'reset-password') {
@@ -2642,6 +2731,7 @@ async function handleAdminRoleChange(e) {
   const select = e.target.closest('[data-admin-role-select]');
   if (!select) return;
   hideAdminError();
+  if (blockedByDemo()) return void refreshAdminConsole(); // repaint to undo the select
   const memberId = select.dataset.memberId;
   const { ok, error } = await updateMemberRole(supabase, memberId, select.value);
   if (!ok) showAdminError(error || 'Could not update role');
@@ -2673,7 +2763,7 @@ async function handlePostRosterMutation(memberId) {
 async function handleAdminOrgNameSubmit(e) {
   e.preventDefault();
   hideAdminError();
-  if (!isOrgAdmin()) return;
+  if (!isOrgAdmin() || blockedByDemo()) return;
   const name = els.adminOrgNameInput.value.trim();
   if (!name) return;
   const { ok, error } = await updateOrganizationName(supabase, currentMembership.org_id, name);
@@ -2689,6 +2779,7 @@ async function handleAdminOrgNameSubmit(e) {
 
 async function handleAdminLeave() {
   hideAdminError();
+  if (blockedByDemo()) return;
   const { ok, error } = await leaveOrganization(supabase);
   if (!ok) {
     showAdminError(error || 'Could not leave organization');
@@ -2823,6 +2914,8 @@ window.addEventListener('DOMContentLoaded', () => {
     adminActivityFilter = e.target.value;
     renderAdminActivity(aggregateDispatcherStats(adminLoads, orgRoster));
   });
+  els.adminDemoToggle.addEventListener('change', (e) => setDemoMode(e.target.checked));
+  els.adminDemoExit.addEventListener('click', () => setDemoMode(false));
   els.adminOrgNameForm.addEventListener('submit', handleAdminOrgNameSubmit);
   els.adminLeaveBtn.addEventListener('click', handleAdminLeave);
   // The console has its own frameless-window controls (its topbar replaces the

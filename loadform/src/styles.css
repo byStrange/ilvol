@@ -1430,6 +1430,43 @@ button {
   color: #64748b;
 }
 
+/* ─── Sample-data banner ────────────────────────────────────────────────── */
+/*
+ * Amber, pinned above everything, and it does not scroll away with the panel.
+ * Every number under it is invented; the one failure mode that matters here is
+ * someone screenshotting fake revenue without the label in frame.
+ */
+
+.lf-demo-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.1);
+}
+
+.lf-demo-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #f59e0b;
+  flex-shrink: 0;
+  animation: lf-demo-pulse 2s ease-in-out infinite;
+}
+
+@keyframes lf-demo-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lf-demo-dot {
+    animation: none;
+  }
+}
+
 /* ─── Charts ────────────────────────────────────────────────────────────── */
 /*
  * All three chart forms here are single-series, so there is exactly one data
