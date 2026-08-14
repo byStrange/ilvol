@@ -9,7 +9,14 @@
  */
 
 import { assertEquals } from 'jsr:@std/assert@1';
-import { CHECKS, scoreFromOutput, type RubricOutput } from './rubric.ts';
+import {
+  CHECKS,
+  lossReasonFromOutput,
+  lostOnCall,
+  scoreFromOutput,
+  type RubricOutput,
+  type ScoredCall,
+} from './rubric.ts';
 
 const TRANSCRIPT = `Hey this is Mike over at TQL. I got a reefer load picking up in
 Amarillo Texas tomorrow morning eight AM appointment, delivering Tulsa Oklahoma
@@ -134,4 +141,101 @@ Deno.test('a half-run call scores proportionally', () => {
   assertEquals(scored.passed, 6);
   assertEquals(scored.applicable, 9);
   assertEquals(scored.score, 66.67);
+});
+
+/* ─── Loss reasons ──────────────────────────────────────────────────────────
+ *
+ * This inference decides what an owner is told about why their freight is not
+ * moving, and in one case it names the dispatcher. The tests that matter are
+ * therefore the ones asking whether it can say that without evidence.
+ */
+
+const LOST_TRANSCRIPT = `Hey it's Dave calling on that Kansas City to Denver load.
+Broker: yeah that one's already covered, sorry man, went out about an hour ago.
+Dispatcher: alright, anything else heading west? Broker: nothing today. Dispatcher: okay
+thanks, I'll check back tomorrow.`;
+
+Deno.test('a stated reason with a real quote is recorded', () => {
+  const finding = lossReasonFromOutput(
+    { reason: 'already_covered', quote: "that one's already covered" },
+    LOST_TRANSCRIPT
+  );
+  assertEquals(finding.reason, 'already_covered');
+});
+
+Deno.test('a reason the transcript does not contain is discarded', () => {
+  const finding = lossReasonFromOutput(
+    // Plausible, and nowhere in the call.
+    { reason: 'rate_too_low', quote: 'I can only pay seventeen hundred on that one' },
+    LOST_TRANSCRIPT
+  );
+  assertEquals(finding.reason, null);
+  assertEquals(finding.note, 'unevidenced');
+});
+
+Deno.test('a reason with no quote at all is discarded', () => {
+  const finding = lossReasonFromOutput({ reason: 'no_truck', quote: '' }, LOST_TRANSCRIPT);
+  assertEquals(finding.reason, null);
+  assertEquals(finding.note, 'unevidenced');
+});
+
+Deno.test('"unknown" is a clean answer, not a failure', () => {
+  const finding = lossReasonFromOutput({ reason: 'unknown', quote: '' }, LOST_TRANSCRIPT);
+  assertEquals(finding.reason, null);
+  assertEquals(finding.note, 'not_stated');
+});
+
+Deno.test('the model cannot reach for lost_on_call, however well it quotes', () => {
+  // The one reason that lands on a person is never the model's to give: it is
+  // derived from missed steps, and offering it here would be exactly the
+  // unevidenced judgement the rubric exists to prevent.
+  const finding = lossReasonFromOutput(
+    { reason: 'lost_on_call', quote: "I'll check back tomorrow" },
+    LOST_TRANSCRIPT
+  );
+  assertEquals(finding.reason, null);
+  assertEquals(finding.note, 'invalid_reason');
+});
+
+Deno.test('an invented reason outside the taxonomy is discarded', () => {
+  const finding = lossReasonFromOutput(
+    { reason: 'dispatcher_was_rude', quote: "that one's already covered" },
+    LOST_TRANSCRIPT
+  );
+  assertEquals(finding.reason, null);
+  assertEquals(finding.note, 'invalid_reason');
+});
+
+/** Rubric checks with the two that decide lostOnCall set as given. */
+function checksWith(
+  negotiated: string,
+  nextSteps: string
+): ScoredCall['checks'] {
+  const scored = scoreFromOutput(output(allPass()), TRANSCRIPT)!;
+  scored.checks.rate_negotiated = { result: negotiated as 'pass', quote: '' };
+  scored.checks.next_steps = { result: nextSteps as 'pass', quote: '' };
+  return scored.checks;
+}
+
+Deno.test('neither pushed on money nor arranged anything: lost on the call', () => {
+  assertEquals(lostOnCall(checksWith('miss', 'miss')), true);
+});
+
+Deno.test('one of the two done is not enough to blame the dispatcher', () => {
+  // Deliberately conservative. A false positive here starts a conversation
+  // somebody did not earn; a false negative costs one row of missing data.
+  assertEquals(lostOnCall(checksWith('pass', 'miss')), false);
+  assertEquals(lostOnCall(checksWith('miss', 'pass')), false);
+});
+
+Deno.test('steps that never had a chance to happen do not convict', () => {
+  // The load was gone before money came up, so there was nothing to negotiate
+  // and nothing to arrange. That is the broker's news, not a bad call.
+  assertEquals(lostOnCall(checksWith('na', 'na')), false);
+  assertEquals(lostOnCall(checksWith('na', 'miss')), false);
+});
+
+Deno.test('an unscored call cannot be lost on the call', () => {
+  assertEquals(lostOnCall(null), false);
+  assertEquals(lostOnCall(undefined), false);
 });

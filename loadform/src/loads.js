@@ -36,7 +36,7 @@ const LOAD_FIELDS = [
 
 // Lightweight columns used for the history list view.
 const LIST_SELECT =
-  'id,title,status,outcome,loss_reason,call_score,pickup_location,delivery_location,pickup_datetime,rate,created_at,updated_at';
+  'id,title,status,outcome,loss_reason,loss_reason_quote,loss_reason_source,call_score,pickup_location,delivery_location,pickup_datetime,rate,created_at,updated_at';
 
 /** Outcomes a load can end in. Mirrors loads_outcome_check in the migration. */
 export const OUTCOMES = ['pending', 'booked', 'lost'];
@@ -49,6 +49,11 @@ export const OUTCOMES = ['pending', 'booked', 'lost'];
  * are a pricing, capacity or timing problem recorded against whoever happened
  * to take the call. An owner reading a low booking rate without this split will
  * blame the person every time.
+ *
+ * Read-only on the client as of 20260815000000. Nothing here is ever written
+ * from the browser now: the reason is inferred from the transcript by the
+ * scorer, which is the only writer that holds the grant. These labels exist to
+ * display what it decided.
  */
 export const LOSS_REASON_META = {
   rate_too_low: { label: 'Rate too low', controllable: false },
@@ -225,15 +230,13 @@ export async function saveLoad(
 
   // Only written when the caller actually asked the dispatcher. Autosave on
   // field edits passes null, which must leave a recorded outcome alone.
+  //
+  // The outcome is all that is asked, and all that is sent. Why a load was lost
+  // is inferred from the transcript by score-call and written service-role; a
+  // stale loss_reason left over from a previous outcome is cleared by the
+  // loads_clear_loss_reason trigger rather than by this payload.
   if (answer?.outcome && OUTCOMES.includes(answer.outcome)) {
     row.outcome = answer.outcome;
-    // Cleared on any non-lost outcome: a load reopened as pending, or later
-    // booked after all, must not keep the reason it was once lost for.
-    row.loss_reason =
-      answer.outcome === 'lost' && LOSS_REASONS.includes(answer.lossReason)
-        ? answer.lossReason
-        : null;
-    row.loss_note = answer.outcome === 'lost' ? answer.lossNote || null : null;
   }
 
   try {
@@ -300,7 +303,7 @@ export async function fetchLoads(supabase, userId) {
  * reason a self-view can exist without the admin-only peer reads.
  */
 const MY_STATS_SELECT =
-  'id, title, status, outcome, loss_reason, loss_note, call_score, call_checks, call_score_skipped, rate, rate_usd, miles, pickup_location, delivery_location, created_at';
+  'id, title, status, outcome, loss_reason, loss_reason_quote, loss_reason_source, loss_note, call_score, call_checks, call_score_skipped, rate, rate_usd, miles, pickup_location, delivery_location, created_at';
 
 export async function fetchMyLoadsDetailed(supabase, userId, limit = 200) {
   if (!supabase || !userId) return [];
@@ -352,27 +355,12 @@ export async function setLoadStatus(supabase, id, status) {
  * Separate from setLoadStatus because the two are unrelated: archiving a load
  * in the history panel says nothing about whether it was won.
  */
-export async function setLoadOutcome(
-  supabase,
-  id,
-  outcome,
-  lossReason = null,
-  lossNote = null
-) {
+export async function setLoadOutcome(supabase, id, outcome) {
   if (!supabase || !id || !OUTCOMES.includes(outcome)) return false;
+  // Outcome only. loss_reason and its evidence are service-role columns as of
+  // 20260815000000 — naming them here would be rejected by the grant, and
+  // clearing a stale one is the trigger's job in any case.
   const patch = { outcome, updated_at: new Date().toISOString() };
-  if (outcome !== 'lost') {
-    // Reopening or rebooking a load drops the reason it was lost for, which
-    // would otherwise sit on the row contradicting its own outcome.
-    patch.loss_reason = null;
-    patch.loss_note = null;
-  } else {
-    // The reason is a fixed taxonomy; the note is the dispatcher's own words on
-    // top. They're independent: a "skip" on the reason can still carry a note,
-    // so the note is persisted whether or not a reason was chosen.
-    patch.loss_reason = LOSS_REASONS.includes(lossReason) ? lossReason : null;
-    patch.loss_note = lossNote && lossNote.trim() ? lossNote.trim() : null;
-  }
   const { error } = await supabase.from('loads').update(patch).eq('id', id);
   if (error) {
     console.error('setLoadOutcome failed:', error);

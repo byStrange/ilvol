@@ -275,8 +275,7 @@
     -->
     <div id="outcome-modal" class="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
       <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-sm">
-        <!-- Step 1: what happened -->
-        <div id="outcome-step-result">
+        <div>
           <h2 class="text-lg font-bold text-white">How did this one go?</h2>
           <p id="outcome-lane" class="text-xs text-slate-500 mt-1 mb-5 truncate"></p>
           <div class="space-y-2">
@@ -303,45 +302,16 @@
             </button>
           </div>
           <p class="text-[11px] text-slate-600 mt-4 text-center">
-            You can change this later from Load History.
+            Already saved. You can change this later from Load History.
           </p>
         </div>
 
         <!--
-          Step 2: why. Only shown for a lost load, and the answers are what let
-          the console separate "we lost it" from "this dispatcher lost it" —
-          most losses are a rate or a capacity problem wearing a person's name.
-          Skippable, because a reason someone is forced to invent is worse than
-          no reason at all.
+          There is no step 2. A seven-item "why did you lose it?" menu used to
+          live here; it was removed in 20260815000000 because the transcript
+          answers that question better than the person who just lost the load
+          will, seconds before their next call. score-call reads it instead.
         -->
-        <div id="outcome-step-reason" class="hidden">
-          <h2 class="text-lg font-bold text-white">What happened to it?</h2>
-          <p class="text-xs text-slate-500 mt-1 mb-4">
-            This is what tells your office whether it was the rate, the trucks, or the call.
-          </p>
-          <div class="space-y-1.5">
-            <button type="button" data-loss-reason="rate_too_low" class="lf-reason-btn">Rate was too low</button>
-            <button type="button" data-loss-reason="already_covered" class="lf-reason-btn">Already covered</button>
-            <button type="button" data-loss-reason="no_truck" class="lf-reason-btn">No truck / wrong equipment</button>
-            <button type="button" data-loss-reason="requirements" class="lf-reason-btn">Couldn't meet their requirements</button>
-            <button type="button" data-loss-reason="schedule" class="lf-reason-btn">Couldn't make the schedule</button>
-            <button type="button" data-loss-reason="lost_on_call" class="lf-reason-btn">Lost it on the call</button>
-            <button type="button" data-loss-reason="other" class="lf-reason-btn">Something else</button>
-          </div>
-          <textarea
-            id="outcome-note"
-            rows="2"
-            placeholder="Anything worth remembering (optional)"
-            class="lf-input w-full text-sm mt-3 resize-none"
-          ></textarea>
-          <button
-            type="button"
-            data-loss-reason=""
-            class="lf-btn w-full py-2 mt-2 bg-transparent hover:bg-slate-800 text-slate-500 text-xs font-medium"
-          >
-            Skip
-          </button>
-        </div>
       </div>
     </div>
 
@@ -727,6 +697,31 @@
                 </label>
               </div>
 
+              <!--
+                The safety net for call review. Scoring is requested the moment
+                a load is resolved, but that request is fire-and-forget: a
+                dropped connection, a provider outage or a closed window leaves
+                a call unreviewed with nothing to notice it. This is how those
+                get picked up, and it doubles as the switch-on path for a team
+                that captured for weeks before scoring existed — transcripts are
+                already stored, so call quality is fully backfillable.
+              -->
+              <div class="glass glass-lit rounded-2xl p-5 mb-5 max-w-lg">
+                <h2 class="text-sm font-semibold text-white mb-1">Call review</h2>
+                <p class="text-xs text-slate-500 mb-3">
+                  Finished calls are reviewed automatically. This picks up any the automatic pass
+                  missed, oldest backlog first, a few at a time.
+                </p>
+                <button
+                  id="admin-backlog-btn"
+                  type="button"
+                  class="lf-btn py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium"
+                >
+                  Review unscored calls
+                </button>
+                <p id="admin-backlog-status" class="text-xs text-slate-500 mt-2 hidden"></p>
+              </div>
+
               <div class="glass glass-lit rounded-2xl p-5 max-w-lg">
                 <h2 class="text-sm font-semibold text-white mb-1">Your membership</h2>
                 <p id="admin-membership-note" class="text-xs text-slate-500 mb-3"></p>
@@ -1045,6 +1040,13 @@
         <!-- Right: fields / driver message -->
         <section class="lf-col-fields">
           <div id="fields-section">
+            <!--
+              Sits above the fields because that is what it describes: the row
+              in the database, which is written on every auto-extract and again
+              on every edit. Hidden until there is something to say, so it never
+              claims a save for an empty form.
+            -->
+            <p id="save-status" class="lf-save-status hidden"></p>
             <div id="fields-container" class="lf-fields-grid">
               <!-- Field cards injected by JS -->
             </div>
@@ -1072,15 +1074,25 @@
               <pre id="output-preview" class="lf-driver-pre"></pre>
             </div>
 
+            <!--
+              Was "New Load", which read as "discard this one and start over" —
+              nothing on screen said the load was already in the database, and
+              nothing said this button was where the outcome gets asked. Both
+              are now stated: the chip above tracks the save, and the label
+              names what the button actually does.
+            -->
             <button
               id="new-load-btn"
               class="lf-btn lf-btn-ghost mt-4 w-full py-3 text-white font-medium text-base"
             >
               <span class="inline-flex items-center justify-center gap-2">
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 0 9-9 9.75 9.75 0 0 0 6.74 2.74L21 8" /><path d="M21 3v5h-5" /><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" /><path d="M8 16H3v5" /></svg>
-                New Load
+                Finish &amp; start next load
               </span>
             </button>
+            <p class="text-[11px] text-slate-600 text-center mt-2">
+              This load is saved as you go — finishing only asks how it ended.
+            </p>
 
             <p id="copy-feedback" class="text-sm text-emerald-400 text-center mt-3 hidden">Copied to clipboard!</p>
           </div>

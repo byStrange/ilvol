@@ -47,7 +47,8 @@ export function serviceClient() {
 export type UsageEvent = {
   user_id: string;
   capture_id?: string | null;
-  event_type: 'capture_started' | 'capture_ended' | 'load_extracted';
+  // Mirrors usage_events_event_type_check, last widened in 20260814010000.
+  event_type: 'capture_started' | 'capture_ended' | 'load_extracted' | 'call_scored';
   load_id?: string | null;
   source?: 'mic' | 'system' | 'mixed' | null;
   llm_input_tokens?: number | null;
