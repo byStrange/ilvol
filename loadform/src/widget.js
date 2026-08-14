@@ -162,6 +162,20 @@ async function refreshGeometry() {
 // Track which planet windows exist: key → { slot, value, confidence }
 const planets = new Map();
 
+// Is the sun on screen? Nothing orbits a sun that isn't there.
+//
+// This window is created hidden at app startup and its JS runs from that
+// moment — `load:fields` listener and all — so an extraction driven from the
+// main window would otherwise pop a ring of chips into existence around a
+// widget nobody opened: loose windows over whatever the user was actually
+// doing, with no sun on screen to explain them or close them.
+//
+// Skipping costs nothing. Showing the sun re-emits its geometry, and that
+// rebuilds the orbit from the load the backend has been accumulating the whole
+// time (see `restoreOrbit`). Rust refuses these creates too, as the invariant's
+// backstop — this just keeps us from asking.
+let sunVisible = false;
+
 // ─── DOM ─────────────────────────────────────────────────────────────────
 
 const card = document.getElementById('widget');
@@ -421,6 +435,7 @@ function onLoadFields(payload) {
 }
 
 async function applyLoadFields(payload) {
+  if (!sunVisible) return;
   const data = payload?.data || payload?.payload?.data || {};
   const conf = payload?.confidence || payload?.payload?.confidence || {};
   if (!Object.keys(data).length) return;
@@ -754,6 +769,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     console.error('Widget is_capture_running error:', err);
   }
 
+  // Are we on screen? Normally no — this runs at app startup, with the widget
+  // still hidden. Asked anyway so a webview that reloads while the sun is up
+  // doesn't come back believing it's hidden and sit out the next extraction.
+  try {
+    sunVisible = !!(await tauriInvoke('is_widget_visible'));
+  } catch (err) {
+    console.error('Widget is_widget_visible error:', err);
+  }
+
   // Read the sun's current screen position and the monitor bounds. Layer-shell
   // init is done by Rust in toggle_widget (before show) — JS only needs the
   // geometry for drag tracking and planet placement.
@@ -762,6 +786,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderTranscript();
   initDragTracking();
 
+
+  // Whether the orbit is allowed to exist at all — see `sunVisible`.
+  await tauriListen('widget:visibility', (e) => {
+    sunVisible = !!e.payload;
+  });
 
   // Global events.
   await tauriListen('capture:state', (e) => onCaptureState(e.payload));
@@ -780,6 +809,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // geometry and the rest is rebuilt from the load the backend holds.
   await tauriListen('widget:geometry', (e) => {
     applyGeometry(e.payload);
+    // Geometry is only ever sent on show, so its arrival is itself proof the
+    // sun is up. Saying so here means the rebuild below doesn't depend on the
+    // `widget:visibility` event landing first.
+    sunVisible = true;
     queueOrbitTask(async () => {
       await repositionAllPlanets();
       await restoreOrbit();

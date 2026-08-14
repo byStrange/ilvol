@@ -15,8 +15,10 @@ import {
   readPerformance,
   verdictFromMedians,
   aggregateChecks,
+  aggregateLossReasons,
   SPARK_DAYS,
   MIN_SCORED_CALLS,
+  MIN_EXPLAINED_LOSSES,
 } from './organizations.js';
 
 let failures = 0;
@@ -192,6 +194,67 @@ check(lossStat.lossReasons.rate_too_low, 2, 'reasons are tallied for the breakdo
 // 1 of 5 explained losses — the unexplained one stays out of the denominator,
 // because silence is not evidence in either direction.
 check(lossStat.controllableLossShare, 1 / 5, 'unexplained losses do not dilute the share');
+check(lossStat.explainedLosses, 5, 'the explained count is published for the sample floor');
+
+// ─── The loss-share sample floor ────────────────────────────────────────────
+//
+// The case this exists for: one loss, one reason, and a percentage that reads
+// as a finding. The identical dispatcher is 0% or 100% depending on which call
+// happened to land first, so neither number belongs on a dashboard.
+
+const oneLoss = [
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'already_covered', created_at: daysAgo(1) },
+];
+const oneLossStat = aggregateDispatcherStats(oneLoss, members).find((s) => s.userId === 'u1');
+check(oneLossStat.controllableLossShare, null, 'one explained loss is not a share');
+check(oneLossStat.explainedLosses, 1, 'but the count says how far off the floor it is');
+check(oneLossStat.lossReasons.already_covered, 1, 'the reason itself is still tallied');
+
+const fourLosses = Array.from({ length: 4 }, (_, i) => ({
+  user_id: 'u1',
+  outcome: 'lost',
+  loss_reason: 'lost_on_call',
+  created_at: daysAgo(i + 1),
+}));
+const fourStat = aggregateDispatcherStats(fourLosses, members).find((s) => s.userId === 'u1');
+check(fourStat.controllableLossShare, null, 'still withheld one short of the floor');
+
+const fifth = [
+  ...fourLosses,
+  { user_id: 'u1', outcome: 'lost', loss_reason: 'lost_on_call', created_at: daysAgo(5) },
+];
+const fifthStat = aggregateDispatcherStats(fifth, members).find((s) => s.userId === 'u1');
+check(fifthStat.controllableLossShare, 1, 'and appears exactly at the floor');
+check(MIN_EXPLAINED_LOSSES, 5, 'the floor is the one the tests above assume');
+
+// ─── Loss reasons with their evidence ───────────────────────────────────────
+
+const quotedLosses = [
+  {
+    outcome: 'lost',
+    loss_reason: 'rate_too_low',
+    loss_reason_quote: "that's all it pays",
+  },
+  // Same reason, second quote: the first one recorded is the one kept, so the
+  // panel does not change its evidence between reloads.
+  { outcome: 'lost', loss_reason: 'rate_too_low', loss_reason_quote: 'I cannot go higher' },
+  // Derived rather than spoken, so it arrives with nothing to cite.
+  { outcome: 'lost', loss_reason: 'lost_on_call', loss_reason_quote: null },
+  // Read but unexplained: counted as a loss, absent from the breakdown.
+  { outcome: 'lost', loss_reason: null, loss_reason_quote: null },
+  // Won, and therefore not a loss reason however it is shaped.
+  { outcome: 'booked', loss_reason: 'rate_too_low', loss_reason_quote: 'ignored' },
+];
+const reasons = aggregateLossReasons(quotedLosses);
+
+check(reasons.length, 2, 'only lost loads carrying a reason reach the breakdown');
+check(reasons[0].reason, 'rate_too_low', 'ordered by how often, busiest first');
+check(reasons[0].count, 2, 'and counted');
+check(reasons[0].quote, "that's all it pays", 'the first quote recorded is the one shown');
+check(reasons[1].reason, 'lost_on_call', 'a derived reason still appears');
+check(reasons[1].quote, '', 'with no quote, because it was never spoken');
+check(aggregateLossReasons([]).length, 0, 'no loads, no breakdown');
+check(aggregateLossReasons(null).length, 0, 'and a missing list is not a crash');
 
 // ─── Process score ──────────────────────────────────────────────────────────
 

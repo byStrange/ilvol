@@ -1111,6 +1111,26 @@ body {
   color: #fcd34d;
 }
 
+/*
+ * The broker's words under an inferred reason. Indented behind a rule so it
+ * reads as a citation rather than a second claim, and italic only for real
+ * quotes — the derived line for lost_on_call is our sentence, not anyone's.
+ */
+.lf-loss-quote {
+  margin-top: 0.2rem;
+  padding-left: 0.55rem;
+  border-left: 2px solid rgba(148, 163, 184, 0.25);
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  font-style: italic;
+  color: #64748b;
+}
+
+.lf-loss-quote.is-derived {
+  font-style: normal;
+  border-left-color: rgba(251, 191, 36, 0.3);
+}
+
 .lf-status-active {
   background: rgba(59, 130, 246, 0.18);
   border: 1px solid rgba(59, 130, 246, 0.4);

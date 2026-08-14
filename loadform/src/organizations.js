@@ -268,6 +268,18 @@ const CONTROLLABLE_LOSS_REASONS = new Set(['lost_on_call']);
 export const MIN_SCORED_CALLS = 10;
 
 /**
+ * Explained losses needed before the controllable share is shown.
+ *
+ * The same argument as MIN_SCORED_CALLS, and it was missing here. A share over
+ * one loss is not a small sample, it is a coin: the identical dispatcher reads
+ * as 0% or 100% depending on which single call happened to land first, and both
+ * numbers look equally settled sitting on a dashboard. Five is low enough that a
+ * real answer arrives within a week of normal dialling and high enough that no
+ * single call can swing the headline from "not their fault" to "coach them".
+ */
+export const MIN_EXPLAINED_LOSSES = 5;
+
+/**
  * Roll raw org loads up into one row per dispatcher.
  *
  * Three of the derived numbers have definitions worth stating, because each
@@ -380,8 +392,15 @@ export function aggregateDispatcherStats(loads, members) {
     // Of the losses that carry a reason, how many were the dispatcher's to
     // control. Unexplained losses are excluded from the denominator — silence
     // is not evidence either way.
+    //
+    // Held back below the sample floor for the same reason as the process score
+    // above: withheld, not shown with a caveat. The count is published either
+    // way so the UI can say how far off it is, which is a more useful thing to
+    // put on screen than a percentage nobody should act on yet.
     const explained = stat.lostControllable + stat.lostExternal;
-    stat.controllableLossShare = explained > 0 ? stat.lostControllable / explained : null;
+    stat.explainedLosses = explained;
+    stat.controllableLossShare =
+      explained >= MIN_EXPLAINED_LOSSES ? stat.lostControllable / explained : null;
   }
 
   // Ranked by money booked, not by calls made. Sorting on volume puts whoever
@@ -537,6 +556,39 @@ export function aggregateChecks(loads) {
 }
 
 /**
+ * Roll a dispatcher's lost loads up per reason, keeping the evidence.
+ *
+ * The counterpart to aggregateChecks, and it exists for the same reason: the
+ * reason is inferred by a model now, so whoever reads it has to be able to see
+ * what it was inferred from. Without the quote the breakdown is a machine's
+ * verdict on a person with no way to check it, which is the thing this codebase
+ * keeps refusing to ship.
+ *
+ * The first quote wins rather than the best or the newest. There is no ranking
+ * available between quotes that all satisfied the same verification, and
+ * picking one at random would make the panel change its evidence on reload.
+ *
+ * lost_on_call carries no quote by construction — it is derived from missed
+ * steps, not spoken — so it comes back with an empty string and the caller says
+ * where it came from instead.
+ */
+export function aggregateLossReasons(loads) {
+  const byReason = new Map();
+  for (const load of loads || []) {
+    if (load.outcome !== 'lost' || !load.loss_reason) continue;
+    const row = byReason.get(load.loss_reason) || {
+      reason: load.loss_reason,
+      count: 0,
+      quote: '',
+    };
+    row.count += 1;
+    if (!row.quote && load.loss_reason_quote) row.quote = load.loss_reason_quote;
+    byReason.set(load.loss_reason, row);
+  }
+  return Array.from(byReason.values()).sort((a, b) => b.count - a.count);
+}
+
+/**
  * Org-wide loads per day, oldest first, for the overview trend.
  *
  * Aggregated across everyone on purpose: a single dispatcher's daily count is
@@ -593,7 +645,7 @@ export async function fetchDispatcherLoads(supabase, orgId, userId, limit = 100)
   const { data, error } = await supabase
     .from('loads')
     .select(
-      'id, title, status, outcome, loss_reason, loss_note, call_score, call_checks, call_score_skipped, rate, rate_usd, miles, pickup_location, delivery_location, equipment_type, commodity, created_at'
+      'id, title, status, outcome, loss_reason, loss_reason_quote, loss_note, call_score, call_checks, call_score_skipped, rate, rate_usd, miles, pickup_location, delivery_location, equipment_type, commodity, created_at'
     )
     .eq('org_id', orgId)
     .eq('user_id', userId)
