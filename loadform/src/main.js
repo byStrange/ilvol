@@ -790,6 +790,44 @@ function exitListeningUI() {
   }
 }
 
+/**
+ * Ask the backend whether a capture is already running, and believe it.
+ *
+ * Capture state lives in Rust and outlives this webview. The window can reload
+ * underneath it — Vite swapping a module in dev, a webview crash-recovery in
+ * production — and everything in this file starts again from `isCapturing =
+ * false` while the microphone is still very much open.
+ *
+ * The visible symptom is the orb: the frontend believes nothing is running, so
+ * a click routes to startCapture, and the backend refuses with "Capture already
+ * running" on what is genuinely the user's first press since the reload. The
+ * widget has asked this question since it was written; the main window never
+ * did, which is why only one of the two came back confused.
+ *
+ * Adopting the session rather than stopping it, because the recording is real:
+ * killing it would discard however much of a live broker call has already been
+ * transcribed, to tidy up a variable. What cannot be recovered is the metering
+ * context — the capture id and start time were held only in this window's
+ * memory — so the session is marked unmetered and reportCaptureEnded skips it
+ * rather than inventing a duration from the moment we noticed.
+ */
+async function reconcileCaptureState() {
+  let running = false;
+  try {
+    running = !!(await tauriInvoke('is_capture_running'));
+  } catch {
+    // No Tauri runtime (plain `vite dev`), or the command failed. Either way
+    // there is no backend capture to be out of step with.
+    return;
+  }
+  if (!running || isCapturing) return;
+
+  console.warn('Adopting a capture that outlived the previous page load.');
+  captureStartedAt = null;
+  currentCaptureId = null;
+  enterListeningUI();
+}
+
 function onCaptureState(payload) {
   if (payload?.running) {
     // Sync the device/mix controls to reflect what's actually capturing, so
@@ -3537,4 +3575,11 @@ window.addEventListener('DOMContentLoaded', () => {
       onAudioLevel(event.payload);
     });
   }
+
+  // Last, and after the capture:state listener above is attached: the backend
+  // may already be recording, and this window has no way to know that from its
+  // own state. See reconcileCaptureState.
+  reconcileCaptureState().catch((err) => {
+    console.error('capture state reconcile failed:', err);
+  });
 });
