@@ -459,6 +459,32 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ─── Save status ───────────────────────────────────────────────────────────
+ *
+ * Quiet by default and loud only when it has bad news. A save that worked is
+ * reassurance a dispatcher reads once and then stops noticing, so it stays grey
+ * and small; a save that failed has to survive being glanced past mid-call, so
+ * it takes the amber and the weight the rest of the app reserves for warnings.
+ */
+.lf-save-status {
+  margin-bottom: 0.625rem;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: #64748b;
+  transition: color 120ms ease;
+}
+.lf-save-status.is-saving {
+  color: #475569;
+}
+.lf-save-status.is-saved::before {
+  content: '✓ ';
+  color: #34d399;
+}
+.lf-save-status.is-error {
+  color: #fbbf24;
+  font-weight: 500;
+}
 .lf-status-title {
   margin-top: 2.25rem;
   font-size: 1.5rem;
@@ -1060,6 +1086,29 @@ body {
 .lf-outcome-tag.is-lost {
   background: rgba(148, 163, 184, 0.15);
   color: var(--lf-muted-foreground);
+}
+
+/*
+ * The inferred loss reason. Quieter than the outcome tag it follows — it is an
+ * annotation on that tag, not a second verdict — and amber only for the one
+ * reason that reflects on the dispatcher, matching how the same distinction is
+ * coloured on the owner's scorecard.
+ */
+.lf-loss-tag {
+  margin-left: 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 500;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.5rem;
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.lf-loss-tag.is-controllable {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fcd34d;
 }
 
 .lf-status-active {

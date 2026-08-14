@@ -195,6 +195,119 @@ function normalize(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+/* ─── Why the load was lost ──────────────────────────────────────────────────
+ *
+ * The taxonomy splits into two kinds of reason, and they cannot be established
+ * the same way.
+ *
+ * Six of them are things the broker says out loud. "It's already covered",
+ * "that's all it pays", "I need a reefer" — each is a sentence in the
+ * transcript, so each can be quoted, and the same rule as the rubric applies:
+ * no quote, no reason.
+ *
+ * The seventh, lost_on_call, is an absence. Nobody announces it; it is what
+ * happened when the dispatcher had a live load, a truck and an acceptable rate
+ * and still did not come away with it. Asking a model to spot that would be
+ * asking for an unevidenced judgement about a person — exactly what the rubric
+ * was built to avoid — so it is not in the prompt at all. It is derived from
+ * the checks, below.
+ */
+
+/** Reasons a broker states, and the model may therefore propose. */
+export const QUOTABLE_LOSS_REASONS = [
+  'rate_too_low',
+  'already_covered',
+  'no_truck',
+  'requirements',
+  'schedule',
+  'other',
+] as const;
+
+export type LossReason = (typeof QUOTABLE_LOSS_REASONS)[number] | 'lost_on_call';
+
+export type LossFinding = {
+  reason: LossReason | null;
+  quote: string;
+  /** Set when nothing could be established, for the operator reading logs. */
+  note?: string;
+};
+
+export function buildLossReasonPrompt(transcript: string): string {
+  return `You are reading a transcript of a phone call between a freight dispatcher and a broker. The dispatcher did NOT end up hauling this load. Your job is to find out why, using only what was actually said.
+
+CRITICAL RULES — these override anything else:
+
+1. Report only a reason the broker or dispatcher stated out loud. You MUST include a short verbatim quote showing it. Copy the words exactly as they appear in the transcript. If you cannot find a quote, the answer is "unknown".
+
+2. Do NOT infer a reason from the dispatcher's performance, tone, or from what they failed to ask. If the transcript does not say why the load was lost, the answer is "unknown". "Unknown" is a good answer and is expected often — many calls end without the reason being spoken.
+
+3. Never guess between two reasons. If both a rate problem and a scheduling problem were mentioned, pick the one the call actually ended on.
+
+The reasons:
+- rate_too_low: the money did not work. The broker would not pay what was needed, or the rate offered was refused.
+- already_covered: the load was gone before or during the call — another carrier had it.
+- no_truck: no truck available for it, or the wrong trailer for the freight.
+- requirements: could not meet something the broker required — authority, insurance limits, TWIC, hazmat, team drivers, a tracking app.
+- schedule: could not make the pickup or delivery window.
+- other: a reason clearly stated that fits none of the above.
+
+Return ONLY valid JSON, no markdown fences, in exactly this shape:
+{
+  "reason": "rate_too_low" | "already_covered" | "no_truck" | "requirements" | "schedule" | "other" | "unknown",
+  "quote": "exact words from the transcript, or empty string"
+}
+
+Transcript:
+${transcript}`;
+}
+
+export type LossOutput = { reason?: string; quote?: string };
+
+/**
+ * Turn the model's answer into a recorded reason, or into nothing.
+ *
+ * Same enforcement as the rubric: the quote must actually appear in the
+ * transcript, or the finding is discarded. A model that invents evidence here
+ * cannot manufacture a reason, it can only fail to produce one — and a missing
+ * reason is visible on the dashboard as "no reason recorded", which is honest.
+ */
+export function lossReasonFromOutput(output: LossOutput, transcript: string): LossFinding {
+  const reason = String(output?.reason ?? '').trim();
+  if (!reason || reason === 'unknown') return { reason: null, quote: '', note: 'not_stated' };
+
+  if (!QUOTABLE_LOSS_REASONS.includes(reason as typeof QUOTABLE_LOSS_REASONS[number])) {
+    // Includes the model reaching for lost_on_call, which it was never offered.
+    return { reason: null, quote: '', note: 'invalid_reason' };
+  }
+
+  const quote = typeof output.quote === 'string' ? output.quote.trim() : '';
+  if (!quoteAppears(quote, normalize(transcript))) {
+    return { reason: null, quote: '', note: 'unevidenced' };
+  }
+
+  return { reason: reason as LossReason, quote };
+}
+
+/**
+ * Was this load lost on the call itself?
+ *
+ * Only asked once the transcript has been searched for an external reason and
+ * come back empty. The claim being made is narrow: nothing in the call explains
+ * the loss, and the dispatcher neither pushed on the money nor arranged a next
+ * step. A load that gets that far and still goes nowhere was lost in the room.
+ *
+ * Both misses are required, and an `na` on either is disqualifying. That is
+ * deliberately hard to trigger: this is the one reason that lands on a person,
+ * so the failure mode to avoid is a false positive. A call that negotiated but
+ * arranged nothing, or arranged something but never argued the rate, comes back
+ * unexplained instead — which costs an owner one row of missing data, where the
+ * opposite error costs a dispatcher a conversation they did not earn.
+ */
+export function lostOnCall(checks: ScoredCall['checks'] | null | undefined): boolean {
+  if (!checks) return false;
+  return checks.rate_negotiated?.result === 'miss' && checks.next_steps?.result === 'miss';
+}
+
 /**
  * Does the quote actually appear in the transcript?
  *

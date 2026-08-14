@@ -29,6 +29,8 @@ import {
   resetMemberPassword,
   changeOwnPassword,
   fetchPeerMedians,
+  scoreCall,
+  scoreCallBacklog,
 } from './api.js';
 import {
   saveLoad,
@@ -320,6 +322,8 @@ const els = {
   adminSectionSub: document.getElementById('admin-section-sub'),
   adminRefreshBtn: document.getElementById('admin-refresh-btn'),
   adminError: document.getElementById('admin-error'),
+  adminBacklogBtn: document.getElementById('admin-backlog-btn'),
+  adminBacklogStatus: document.getElementById('admin-backlog-status'),
   adminDemoBanner: document.getElementById('admin-demo-banner'),
   adminDemoDetail: document.getElementById('admin-demo-detail'),
   adminDemoExit: document.getElementById('admin-demo-exit'),
@@ -380,9 +384,7 @@ const els = {
   // Outcome prompt
   outcomeModal: document.getElementById('outcome-modal'),
   outcomeLane: document.getElementById('outcome-lane'),
-  outcomeStepResult: document.getElementById('outcome-step-result'),
-  outcomeStepReason: document.getElementById('outcome-step-reason'),
-  outcomeNote: document.getElementById('outcome-note'),
+  saveStatus: document.getElementById('save-status'),
   // Load history elements
   historyBtn: document.getElementById('history-btn'),
   helpBtn: document.getElementById('help-btn'),
@@ -1104,17 +1106,25 @@ async function handleNewLoad() {
 /**
  * Ask how the load ended. Resolves to 'booked' | 'lost' | 'pending'.
  *
+ * One question, three buttons, no follow-up. It used to ask a lost load *why*
+ * from a seven-item menu, which was dropped in 20260815000000 — that question
+ * asks a dispatcher to file a report on themselves seconds before their next
+ * call, and the honest answer rate on the one option that reflects on them was
+ * never going to be real. The transcript already knows why; score-call reads it.
+ *
+ * So this asks only the thing the dispatcher alone knows and no transcript can
+ * settle: whether the load actually came in. Bookings often land minutes after
+ * the call ends, and no amount of reading the words will find that out.
+ *
  * Escape and a backdrop click resolve to 'pending' rather than cancelling the
  * save: the dispatcher's next load is what they actually care about, and
  * blocking that on an answer they may not have would make the prompt something
  * to route around.
  *
- * `lane` overrides the subtitle (the capture flow reads it from the form; the
- * history flow reads it from the stored row). `startStep` jumps straight to the
- * reason step, used when the outcome was already chosen in the history list —
- * the dispatcher picked "Lost" there, so this only collects why.
+ * `lane` overrides the subtitle — the capture flow reads it from the form, the
+ * history flow from the stored row.
  */
-function askLoadOutcome({ lane: laneOverride, startStep = 'result' } = {}) {
+function askLoadOutcome({ lane: laneOverride } = {}) {
   return new Promise((resolve) => {
     const lane =
       laneOverride ??
@@ -1122,36 +1132,18 @@ function askLoadOutcome({ lane: laneOverride, startStep = 'result' } = {}) {
         .filter(Boolean)
         .join(' → ');
     els.outcomeLane.textContent = lane || 'This load';
-    showOutcomeStep(startStep);
-    els.outcomeNote.value = '';
 
-    const finish = (outcome, lossReason = null) => {
+    const finish = (outcome) => {
       els.outcomeModal.removeEventListener('click', onClick);
       document.removeEventListener('keydown', onKey, true);
       els.outcomeModal.classList.add('hidden');
-      resolve({
-        outcome,
-        lossReason: outcome === 'lost' ? lossReason || null : null,
-        lossNote: outcome === 'lost' ? els.outcomeNote.value.trim() || null : null,
-      });
+      resolve({ outcome });
     };
 
     const onClick = (e) => {
       const outcomeBtn = e.target.closest('[data-outcome]');
-      if (outcomeBtn) {
-        // A lost load is the only one with a follow-up question. Booking
-        // something needs no explanation, and asking for one would make the
-        // good outcome the slower one to record.
-        if (outcomeBtn.dataset.outcome === 'lost') return showOutcomeStep('reason');
-        return finish(outcomeBtn.dataset.outcome);
-      }
-      const reasonBtn = e.target.closest('[data-loss-reason]');
-      if (reasonBtn) return finish('lost', reasonBtn.dataset.lossReason);
-      // Dismissing from the reason step still records the loss — the dispatcher
-      // answered the question that matters, and the why is optional.
-      if (e.target === els.outcomeModal) {
-        finish(outcomeStep === 'reason' ? 'lost' : 'pending');
-      }
+      if (outcomeBtn) return finish(outcomeBtn.dataset.outcome);
+      if (e.target === els.outcomeModal) finish('pending');
     };
 
     const onKey = (e) => {
@@ -1159,7 +1151,7 @@ function askLoadOutcome({ lane: laneOverride, startStep = 'result' } = {}) {
         // Captured, so this dialog claims Escape ahead of anything a future
         // global handler might do with it while the prompt is open.
         e.stopPropagation();
-        finish(outcomeStep === 'reason' ? 'lost' : 'pending');
+        finish('pending');
       }
     };
 
@@ -1169,20 +1161,13 @@ function askLoadOutcome({ lane: laneOverride, startStep = 'result' } = {}) {
   });
 }
 
-let outcomeStep = 'result';
-
-function showOutcomeStep(step) {
-  outcomeStep = step;
-  els.outcomeStepResult.classList.toggle('hidden', step !== 'result');
-  els.outcomeStepReason.classList.toggle('hidden', step !== 'reason');
-}
-
 function resetForm() {
   accumulatedTranscript = '';
   transcriptWords = [];
   currentExtractedData = null;
   currentConfidence = {};
   isCapturing = false;
+  clearSaveStatus();
 
   els.liveTranscript.innerHTML = '';
   els.transcriptArea.classList.add('hidden');
@@ -1219,6 +1204,7 @@ function resetForm() {
 // Never throws — a save failure is logged but does not block the UI.
 async function saveCurrentLoad(answer = null) {
   if (!currentUser || !currentExtractedData) return;
+  setSaveStatus('saving');
   const { id } = await saveLoad(
     supabase,
     currentUser.id,
@@ -1232,6 +1218,11 @@ async function saveCurrentLoad(answer = null) {
   if (id && !currentLoadId) {
     currentLoadId = id;
   }
+  // saveLoad swallows its own errors and reports the outcome through the id: no
+  // id back from an insert means nothing landed. Said out loud rather than only
+  // logged, because a silent write failure here is invisible until someone asks
+  // the office why their loads are missing.
+  setSaveStatus(id ? 'saved' : 'error');
   if (answer?.outcome) {
     currentLoadOutcome = answer.outcome;
     // The call is over and has a transcript, so it can be reviewed now. Fired
@@ -1242,12 +1233,76 @@ async function saveCurrentLoad(answer = null) {
   refreshLoadsList();
 }
 
-/** Ask the server to review a finished call. Best-effort by design. */
+/**
+ * Say whether the load on screen is safe.
+ *
+ * Every load is already written to Supabase on each auto-extract, several times
+ * within a single call — but nothing said so, and the only visible thing that
+ * looked like a commit was a button labelled "New Load". A dispatcher who read
+ * that as "discard" had no reason to think otherwise, and one who closed the
+ * window mid-call had no way to know their work was already safe.
+ *
+ * So the state is stated. 'saved' carries a timestamp because "Saved" alone
+ * ages badly: three minutes into a call it is the freshness of the save, not
+ * the fact of it, that tells you whether the last correction went in.
+ */
+let saveStatusTimer = null;
+
+function setSaveStatus(state) {
+  const el = els.saveStatus;
+  if (!el) return;
+  clearTimeout(saveStatusTimer);
+  el.classList.remove('hidden', 'is-saving', 'is-saved', 'is-error');
+
+  if (state === 'saving') {
+    el.classList.add('is-saving');
+    el.textContent = 'Saving…';
+    return;
+  }
+  if (state === 'error') {
+    el.classList.add('is-error');
+    el.textContent = "Couldn't save — check your connection";
+    return;
+  }
+
+  el.classList.add('is-saved');
+  const at = new Date();
+  const stamp = () => {
+    const secs = Math.round((Date.now() - at.getTime()) / 1000);
+    el.textContent =
+      secs < 5
+        ? 'Saved'
+        : secs < 60
+          ? `Saved ${secs}s ago`
+          : `Saved ${Math.round(secs / 60)}m ago`;
+    saveStatusTimer = setTimeout(stamp, secs < 60 ? 5000 : 60000);
+  };
+  stamp();
+}
+
+function clearSaveStatus() {
+  clearTimeout(saveStatusTimer);
+  if (els.saveStatus) els.saveStatus.classList.add('hidden');
+}
+
+/**
+ * Ask the server to review a finished call. Best-effort by design.
+ *
+ * Wrapped in try/catch as well as .catch(): a synchronous throw from scoreCall
+ * would otherwise escape into saveCurrentLoad and take the rest of the save
+ * path down with it — which is exactly what happened while this module was
+ * calling scoreCall without importing it, turning every finished load into a
+ * ReferenceError that also swallowed the history refresh behind it.
+ */
 function requestCallScore(loadId) {
   if (!loadId) return;
-  scoreCall(loadId).catch((err) => {
-    console.error('call scoring failed:', err.message);
-  });
+  try {
+    scoreCall(loadId).catch((err) => {
+      console.error('call scoring failed:', err.message);
+    });
+  } catch (err) {
+    console.error('call scoring could not be requested:', err);
+  }
 }
 
 // Debounced autosave triggered by form field edits.
@@ -1370,7 +1425,35 @@ function outcomeControl(load) {
     data-load-id="${load.id}"
     data-outcome="pending"
     title="Change — reopens this load as unresolved"
-  >${booked ? '✓ Booked' : 'Lost'}</button>`;
+  >${booked ? '✓ Booked' : 'Lost'}</button>${booked ? '' : lossReasonTag(load)}`;
+}
+
+/**
+ * The inferred reason beside a lost load, and the words that justify it.
+ *
+ * Shown to the dispatcher, not just to the office, and that is the point: this
+ * is a judgement recorded against them by a model that read their call, so the
+ * person it describes has to be able to see it and see what it was based on.
+ * The quote goes in the tooltip rather than the row because it is the answer to
+ * "says who?" — needed the moment someone disagrees, and clutter until then.
+ *
+ * A reason the scorer looked for and could not find shows as nothing at all. It
+ * is not an accusation and there is no evidence to read, so inventing a label
+ * for it would only teach dispatchers to argue with an empty box.
+ */
+function lossReasonTag(load) {
+  const meta = LOSS_REASON_META[load.loss_reason];
+  if (!meta) return '';
+  const quote = load.loss_reason_quote;
+  const title = quote
+    ? `From the call: “${quote}”`
+    : load.loss_reason === 'lost_on_call'
+      ? 'No rate pushback and no next step agreed on this call'
+      : '';
+  return `<span
+    class="lf-loss-tag${meta.controllable ? ' is-controllable' : ''}"
+    ${title ? `title="${escapeHtml(title)}"` : ''}
+  >${escapeHtml(meta.label)}</span>`;
 }
 
 // Open a saved load into the form/output for review or further editing.
@@ -1429,30 +1512,21 @@ async function toggleLoadStatus(id) {
 /**
  * Record (or reopen) a load's outcome from the history panel.
  *
- * A loss marked here opens the same reason prompt as the capture flow: without
- * it, a load tapped "Lost" in the list carries no reason and never reaches the
- * "why loads were lost" breakdown — so the office would see the loss but not
- * whether it was the rate, the trucks, or the call. Booking and reopening need
- * no follow-up, so only the lost path prompts.
+ * One tap, no prompt: the reason a load was lost is the scorer's question now,
+ * not the dispatcher's. Which makes the review request below the important line
+ * in this function — a load resolved here rather than at capture time was
+ * previously never handed to score-call at all, so it reached neither the step
+ * breakdown nor the loss reasons. Resolving a load is what makes it reviewable,
+ * wherever the resolving happens.
  */
 async function changeLoadOutcome(id, outcome) {
-  let lossReason = null;
-  let lossNote = null;
-  if (outcome === 'lost') {
-    const load = loadsList.find((l) => l.id === id);
-    const lane = load
-      ? [load.pickup_location, load.delivery_location].filter(Boolean).join(' → ')
-      : '';
-    const answer = await askLoadOutcome({ lane, startStep: 'reason' });
-    lossReason = answer.lossReason;
-    lossNote = answer.lossNote;
-  }
-  const ok = await setLoadOutcome(supabase, id, outcome, lossReason, lossNote);
+  const ok = await setLoadOutcome(supabase, id, outcome);
   if (!ok) return;
   // Keep the open load's state in step, so starting the next one doesn't
   // re-ask about a load just answered here — or skip asking about one just
   // reopened.
   if (id === currentLoadId) currentLoadOutcome = outcome;
+  if (outcome !== 'pending') requestCallScore(id);
   await refreshLoadsList();
 }
 
@@ -2987,6 +3061,61 @@ function renderAdminSettings() {
   els.adminLeaveBtn.classList.toggle('hidden', isOwner);
 }
 
+/**
+ * Sweep the org's unreviewed calls.
+ *
+ * Runs in bounded batches server-side (BATCH_LIMIT), so this loops until the
+ * backlog is empty rather than pretending one click finished the job — and it
+ * reports what is left after each pass, because a team switching this on for
+ * the first time may have hundreds of calls behind them and deserves to see the
+ * number move rather than a spinner that ends with no explanation.
+ */
+let backlogInFlight = false;
+
+async function handleAdminBacklog() {
+  if (!isOrgAdmin() || backlogInFlight) return;
+  if (blockedByDemo()) return;
+
+  backlogInFlight = true;
+  els.adminBacklogBtn.disabled = true;
+  const status = els.adminBacklogStatus;
+  status.classList.remove('hidden', 'text-amber-400');
+  status.classList.add('text-slate-500');
+
+  let reviewed = 0;
+  try {
+    for (;;) {
+      status.textContent = reviewed
+        ? `Reviewed ${reviewed} so far…`
+        : 'Reviewing…';
+      const res = await scoreCallBacklog();
+      reviewed += res?.reviewed ?? 0;
+      // A batch that reviewed nothing means the remaining loads cannot be
+      // reviewed at all — no transcript, too short, provider refusing. Stopping
+      // on it is what keeps this from looping forever on the same rows.
+      if (!res?.reviewed) {
+        status.textContent = res?.remaining
+          ? `Reviewed ${reviewed}. ${res.remaining} could not be reviewed — usually calls too short to read.`
+          : `Reviewed ${reviewed}. Nothing left to review.`;
+        break;
+      }
+      if (!res.remaining) {
+        status.textContent = `Reviewed ${reviewed}. Nothing left to review.`;
+        break;
+      }
+    }
+    await refreshAdminConsole();
+  } catch (err) {
+    console.error('backlog review failed:', err);
+    status.classList.remove('text-slate-500');
+    status.classList.add('text-amber-400');
+    status.textContent = `Review stopped: ${err.message}`;
+  } finally {
+    backlogInFlight = false;
+    els.adminBacklogBtn.disabled = false;
+  }
+}
+
 function formatAdminDate(value) {
   if (!value) return '';
   const d = new Date(value);
@@ -3331,6 +3460,7 @@ window.addEventListener('DOMContentLoaded', () => {
   els.adminDemoToggle.addEventListener('change', (e) => setDemoMode(e.target.checked));
   els.adminDemoExit.addEventListener('click', () => setDemoMode(false));
   els.adminOrgNameForm.addEventListener('submit', handleAdminOrgNameSubmit);
+  els.adminBacklogBtn.addEventListener('click', handleAdminBacklog);
   els.adminLeaveBtn.addEventListener('click', handleAdminLeave);
   // The console has its own frameless-window controls (its topbar replaces the
   // capture header, which is where the originals live).

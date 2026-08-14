@@ -310,6 +310,11 @@ function makeLoad(rand, person, userId, date, daysAgo, index) {
     rate_usd: rateUsd,
     miles,
     loss_reason: lossReason,
+    // Reasons are inferred by score-call now, so the demo says so — including
+    // the 'ai' stamp on a null reason, which is the real "we read the call and
+    // it never said why" state rather than "nobody has looked".
+    loss_reason_source: outcome === 'lost' ? 'ai' : null,
+    loss_reason_quote: lossReason ? LOSS_REASON_QUOTES[lossReason] ?? null : null,
     loss_note: null,
     call_checks: checks,
     call_score: score,
@@ -382,6 +387,22 @@ const DEMO_QUOTES = {
   equipment_confirmed: "it's a reefer, set at negative ten continuous",
   accessorials_raised: 'is there a lumper at delivery',
   next_steps: "send me the rate confirmation and I'll get you the driver info",
+};
+
+/**
+ * The broker's words behind each inferred reason.
+ *
+ * lost_on_call is absent on purpose and always will be: it is derived from
+ * missed rubric steps rather than quoted, so a demo that showed a quote beside
+ * it would be advertising evidence the real system never produces.
+ */
+const LOSS_REASON_QUOTES = {
+  rate_too_low: "that's all it pays, I can't go any higher on this one",
+  already_covered: "that one's already covered, went out about an hour ago",
+  no_truck: 'I need a reefer on it, a van will not work',
+  requirements: 'we need a million in cargo coverage for this shipper',
+  schedule: 'it has to be on the dock by six AM, no later',
+  other: 'the shipper pulled it this morning',
 };
 
 // Built once per session. Regenerating per render would be wasteful and, with
