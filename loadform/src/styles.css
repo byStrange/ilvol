@@ -1705,7 +1705,18 @@ button {
   color: #fcd34d;
 }
 
-/* Narrow windows: collapse the sidebar to an icon rail. */
+/* ─── Narrow windows ─────────────────────────────────────────────────────
+ *
+ * This is a resizable desktop window, not a phone, and the failure mode is
+ * different: nobody loads the app at 380px, they drag the edge in to park it
+ * beside a load board and keep dragging past the point where it still works.
+ *
+ * tauri.conf.json now floors the window at 420×520, which is the narrowest
+ * width the rules below actually hold together at. The two numbers belong to
+ * each other — moving one without the other reintroduces the break.
+ */
+
+/* Collapse the sidebar to an icon rail. */
 @media (max-width: 720px) {
   .lf-admin-sidebar {
     width: 3.75rem;
@@ -1723,6 +1734,113 @@ button {
   .lf-admin-nav-item,
   .lf-admin-switch {
     justify-content: center;
+  }
+
+  /* The topbar carries a title and its actions on one row. Below this width
+   * the two stop fitting, and a nowrap flex row does not fail gracefully —
+   * it pushes the buttons off the right edge of a pane that cannot scroll
+   * sideways. Wrapping puts them on their own line instead. */
+  .lf-admin-topbar {
+    flex-wrap: wrap;
+    gap: 0.625rem;
+    padding: 0.875rem 1rem;
+  }
+
+  .lf-admin-body {
+    padding: 1rem;
+  }
+}
+
+/*
+ * The genuinely small end. Everything here buys back horizontal room, because
+ * at 420px the orb and its copy are the whole screen and there is nothing left
+ * to give.
+ */
+@media (max-width: 560px) {
+  /* The orb is the single largest fixed object in the layout and the one that
+   * decides how much room the transcript underneath it gets. Shrunk rather
+   * than scrolled: a capture button you have to scroll to is worse than a
+   * smaller one. */
+  .lf-orb {
+    width: 8.5rem;
+    height: 8.5rem;
+  }
+
+  .lf-orb-core {
+    width: 7rem;
+    height: 7rem;
+  }
+
+  .lf-orb-bars {
+    height: 2.5rem;
+  }
+
+  /* px-6 from Tailwind is 24px a side, which is 11% of a 420px window spent on
+   * margin. */
+  #app {
+    padding-left: 0.875rem;
+    padding-right: 0.875rem;
+  }
+
+  .lf-app-grid {
+    gap: 1.25rem;
+    /* The two-column desktop rule never applies here, so the stacked columns
+     * only need to clear the header — not fill a viewport they now overflow. */
+    min-height: 0;
+  }
+
+  .lf-col-capture {
+    padding-top: 0.5rem;
+  }
+
+  .lf-status-title {
+    margin-top: 1.5rem;
+    font-size: 1.25rem;
+  }
+
+  /* Three outcome tiles side by side is the tightest grid in the console.
+   * They hold a number and a one-word label, so they survive the squeeze if
+   * the padding and the digits come down with it. */
+  .lf-outcome-tile {
+    padding: 0.625rem 0.5rem;
+  }
+
+  .lf-outcome-tile-value {
+    font-size: 1.125rem;
+  }
+
+  .lf-kpi {
+    padding: 0.75rem;
+  }
+
+  .lf-kpi-value {
+    font-size: 1.25rem;
+  }
+
+  /* The capture header carries a brand block, two pills and four icon buttons
+   * on one nowrap row. It is the first thing to overflow, and it overflows off
+   * the right edge where a frameless window has no scrollbar to reveal it.
+   * Allowed to wrap as the backstop, with the two most redundant things
+   * dropped first so it usually does not need to. */
+  #app > header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding-top: 0.875rem;
+    padding-bottom: 0.875rem;
+  }
+
+  /* The tagline under the wordmark. Decoration, and the first thing anyone
+   * would cut by hand. */
+  #app > header .leading-tight p:last-child {
+    display: none;
+  }
+
+  /* The status pill says "Recording" three inches above a headline that says
+   * "Listening…". One of them can go, and it is the one that costs the row
+   * the room it is short of. ID selector to beat Tailwind's .hidden toggling
+   * either way — this stays hidden at this width regardless of state. */
+  #status-badge {
+    display: none;
   }
 }
 
