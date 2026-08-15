@@ -383,6 +383,7 @@ const els = {
   adminBillingPreview: document.getElementById('admin-billing-preview'),
   adminMembershipNote: document.getElementById('admin-membership-note'),
   adminLeaveBtn: document.getElementById('admin-leave-btn'),
+  adminLogoutBtn: document.getElementById('admin-logout-btn'),
   // Outcome prompt
   outcomeModal: document.getElementById('outcome-modal'),
   outcomeLane: document.getElementById('outcome-lane'),
@@ -3404,6 +3405,14 @@ async function handleLogout() {
   adminLoads = [];
   adminRecentLoads = [];
   adminActivityFilter = 'all';
+  // The open dispatcher report goes too. It was already stale after a sign-out
+  // and is now reachable in one click: signing out from this console is most
+  // likely done with someone's report on screen, and that report carries their
+  // loss reasons and the transcript quotes behind them. On the shared
+  // dispatch-office machine this whole block exists for, that is the last
+  // screen the next person should inherit.
+  adminDispatcherId = null;
+  adminDispatcherLoads = [];
   renderLoadsList();
   renderInviteBanner(); // clear a previous user's invites off the screen
   // Don't leave the previous user's counts on screen for the next sign-in.
@@ -3515,6 +3524,10 @@ window.addEventListener('DOMContentLoaded', () => {
   els.adminOrgNameForm.addEventListener('submit', handleAdminOrgNameSubmit);
   els.adminBacklogBtn.addEventListener('click', handleAdminBacklog);
   els.adminLeaveBtn.addEventListener('click', handleAdminLeave);
+  // Same handler as the capture-mode logout: it already ends by switching back
+  // to capture mode and raising the auth modal, so it lands correctly whichever
+  // side of the app it was pressed from.
+  els.adminLogoutBtn.addEventListener('click', handleLogout);
   // The console has its own frameless-window controls (its topbar replaces the
   // capture header, which is where the originals live).
   els.adminWinMinimize.addEventListener('click', minimizeMainWindow);
