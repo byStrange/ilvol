@@ -722,16 +722,38 @@
                 <p id="admin-backlog-status" class="text-xs text-slate-500 mt-2 hidden"></p>
               </div>
 
+              <!--
+                Signing out lives here as well as in the capture-mode settings
+                modal. An owner works entirely inside this console and has no
+                reason to visit capture mode, so routing them through it to
+                reach a logout button meant leaving the app you are using to
+                find a control that belongs to you rather than to the org.
+
+                Leave-organization keeps the red. Both buttons sit in the same
+                card and only one of them is destructive: signing out is a
+                thing you do at the end of every shift, and dressing it like
+                the button that removes you from the company teaches people to
+                read red as "nothing to worry about".
+              -->
               <div class="glass glass-lit rounded-2xl p-5 max-w-lg">
                 <h2 class="text-sm font-semibold text-white mb-1">Your membership</h2>
                 <p id="admin-membership-note" class="text-xs text-slate-500 mb-3"></p>
-                <button
-                  id="admin-leave-btn"
-                  type="button"
-                  class="lf-btn py-2 px-4 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-sm font-medium border border-red-500/30 hidden"
-                >
-                  Leave organization
-                </button>
+                <div class="flex flex-wrap gap-2">
+                  <button
+                    id="admin-logout-btn"
+                    type="button"
+                    class="lf-btn py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 text-sm font-medium"
+                  >
+                    Sign out
+                  </button>
+                  <button
+                    id="admin-leave-btn"
+                    type="button"
+                    class="lf-btn py-2 px-4 bg-red-500/15 hover:bg-red-500/25 text-red-400 text-sm font-medium border border-red-500/30 hidden"
+                  >
+                    Leave organization
+                  </button>
+                </div>
               </div>
             </section>
           </div>
