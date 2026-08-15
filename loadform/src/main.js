@@ -143,6 +143,14 @@ const STATUS_COPY = {
     title: 'Tap to capture a load',
     sub: "Read the broker's offer out loud. I'll build the dispatch as you talk.",
   },
+  // Between the tap and the first word there is a token to mint and a
+  // transcription socket to open. Saying so is most of the fix for the
+  // overclicking this state exists to stop: a button that looks untouched for
+  // a second and a half is asking to be pressed again.
+  connecting: {
+    title: 'Starting…',
+    sub: 'Opening the microphone. Give it a second.',
+  },
   listening: {
     title: 'Listening…',
     sub: 'Keep going — details lock in automatically.',
@@ -458,9 +466,20 @@ function renderOrb() {
   const orb = els.voiceOrb;
   orb.classList.toggle('is-listening', status === 'listening');
   orb.classList.toggle('is-processing', status === 'processing');
+  // The visible half of the start lock. The authority is captureStarting in
+  // toggleCapture — this only has to make the button look as unavailable as it
+  // now is, so nobody keeps tapping a control that is already working.
+  orb.classList.toggle('is-connecting', status === 'connecting');
+  orb.setAttribute('aria-busy', status === 'connecting' ? 'true' : 'false');
   orb.setAttribute(
     'aria-label',
-    status === 'listening' ? 'Stop listening' : status === 'done' ? 'Start a new load' : 'Start listening',
+    status === 'connecting'
+      ? 'Starting capture, please wait'
+      : status === 'listening'
+        ? 'Stop listening'
+        : status === 'done'
+          ? 'Start a new load'
+          : 'Start listening',
   );
 
   if (status === 'listening') {
@@ -477,7 +496,7 @@ function renderOrb() {
     html += '</span>';
     els.orbContent.innerHTML = html;
     els.orbContent.classList.remove('lf-orb-icon');
-  } else if (status === 'processing') {
+  } else if (status === 'processing' || status === 'connecting') {
     els.orbContent.classList.remove('lf-orb-icon');
     els.orbContent.innerHTML =
       '<span class="lf-orb-dots">' +
@@ -497,6 +516,7 @@ function renderOrb() {
 function renderStatusPill() {
   const map = {
     idle: { label: 'Ready', cls: '' },
+    connecting: { label: 'Starting', cls: 'is-processing' },
     listening: { label: 'Recording', cls: 'is-listening' },
     processing: { label: 'Processing', cls: 'is-processing' },
     done: { label: 'Complete', cls: 'is-done' },
@@ -682,7 +702,52 @@ function resetMeters() {
 // transitions live in enterListeningUI / exitListeningUI, driven by
 // onCaptureState.
 
+/**
+ * The start lock.
+ *
+ * `isCapturing` is not set by the click that starts a capture — it is set when
+ * Rust broadcasts capture:state back, which is one token mint and one
+ * transcription socket later. Between those two moments every further click
+ * saw isCapturing === false and started the whole thing again, and the cost was
+ * not only the "Capture already running" alert on the second press: each
+ * attempt mints a fresh Deepgram token, and minting one is what the daily
+ * capture quota counts. An impatient double-tap spent two of three loads.
+ *
+ * So the lock is claimed synchronously, before the first await, and released
+ * only when the outcome is known — capture:state arriving, or the start
+ * failing. captureStartTimeout is the escape hatch for the case where neither
+ * happens, because an orb that can never be pressed again is a worse failure
+ * than the one being fixed.
+ */
+let captureStarting = false;
+let captureStartTimeout = null;
+
+/** Long enough for a slow token mint plus a socket, short enough to recover. */
+const CAPTURE_START_TIMEOUT_MS = 20000;
+
+function beginCaptureStart() {
+  captureStarting = true;
+  setStatus('connecting');
+  clearTimeout(captureStartTimeout);
+  captureStartTimeout = setTimeout(() => {
+    if (!captureStarting) return;
+    console.warn('capture:state never arrived; releasing the start lock.');
+    endCaptureStart();
+    if (!isCapturing) setStatus('idle');
+  }, CAPTURE_START_TIMEOUT_MS);
+}
+
+function endCaptureStart() {
+  captureStarting = false;
+  clearTimeout(captureStartTimeout);
+  captureStartTimeout = null;
+}
+
 async function toggleCapture() {
+  // Held ahead of the isCapturing branch on purpose: while a start is in
+  // flight neither answer is right yet, so the only correct move is to ignore
+  // the click entirely.
+  if (captureStarting) return;
   if (isCapturing) {
     await stopCapture();
   } else {
@@ -699,6 +764,9 @@ async function startCapture() {
   if (status === 'done') {
     resetForm();
   }
+  // Claimed here, ahead of every await below. Anything that can reject before
+  // this point (no device selected) leaves the orb untouched and usable.
+  beginCaptureStart();
   try {
     // Mint a fresh short-lived Deepgram token per capture. This is also the
     // server-side gate where quota will be enforced, so a failure here is a
@@ -719,6 +787,11 @@ async function startCapture() {
       deepgramToken: token,
     });
   } catch (err) {
+    // Released before the alert, not after: alert() blocks this thread until
+    // it is dismissed, and holding the lock across it would leave the orb dead
+    // for as long as the dialog sits there unread.
+    endCaptureStart();
+    setStatus('idle');
     console.error('Failed to start capture:', err);
     // The server's message names the actual limit and when it resets, so
     // prefer it over anything hardcoded here.
@@ -729,6 +802,9 @@ async function startCapture() {
     );
     if (err?.quotaExceeded) refreshUsage();
   }
+  // No release on the success path. start_capture_cmd resolving means Rust
+  // accepted the session, not that it is live — capture:state is what says
+  // that, and enterListeningUI drops the lock when it arrives.
 }
 
 async function stopCapture() {
@@ -750,6 +826,10 @@ async function stopCapture() {
 }
 
 function enterListeningUI() {
+  // The capture is live, so whoever was waiting on it can stop waiting. Done
+  // here rather than in startCapture because this also covers a session
+  // started from the widget, and a capture adopted after a page reload.
+  endCaptureStart();
   accumulatedTranscript = '';
   transcriptWords = [];
   currentExtractedData = null;
@@ -774,6 +854,9 @@ function enterListeningUI() {
 }
 
 function exitListeningUI() {
+  // A start that ended in a stop rather than a listen — Rust refusing the
+  // device, say. Whatever happened, nothing is pending any more.
+  endCaptureStart();
   isCapturing = false;
   els.meterContainer.classList.add('hidden');
   resetMeters();
