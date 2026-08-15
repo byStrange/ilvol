@@ -95,6 +95,22 @@ body {
 .lf-orb:active {
   transform: scale(0.97);
 }
+
+/*
+ * Starting up. The click already landed and the microphone is on its way, so
+ * the orb stops answering: pointer-events off is the visible half of the lock
+ * that toggleCapture holds in JS, and it also kills the :active press
+ * animation, which was the thing most likely to convince someone the tap had
+ * been missed and should be repeated.
+ *
+ * Not `cursor: not-allowed` — nothing is disallowed, it is working. `wait`
+ * says the honest thing.
+ */
+.lf-orb.is-connecting {
+  pointer-events: none;
+  cursor: wait;
+  opacity: 0.75;
+}
 .lf-orb-glow {
   position: absolute;
   inset: 0;

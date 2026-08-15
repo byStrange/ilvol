@@ -204,6 +204,12 @@ function renderTranscript() {
 
 function setListening(listening) {
   isCapturing = listening;
+  // Whatever was pending has resolved one way or the other by the time the
+  // backend has an answer about whether audio is flowing.
+  captureStarting = false;
+  clearTimeout(captureStartTimeout);
+  captureStartTimeout = null;
+  micBtn.removeAttribute('aria-busy');
   card.classList.toggle('is-listening', listening);
   micBtn.disabled = listening;
   stopBtn.disabled = !listening;
@@ -460,11 +466,52 @@ async function applyLoadFields(payload) {
 
 // ─── Capture flow ────────────────────────────────────────────────────────
 
+/**
+ * Same start lock as the main window, for the same reason.
+ *
+ * `isCapturing` here is also set by capture:state rather than by the click, so
+ * the mic button was equally re-pressable during the token mint — and each
+ * press spends a capture against the daily quota. The widget is the more
+ * likely place to hit it: the button is small, and it disables itself only
+ * once listening has actually begun.
+ */
+let captureStarting = false;
+let captureStartTimeout = null;
+
+/** Long enough for a slow token mint plus a socket, short enough to recover. */
+const CAPTURE_START_TIMEOUT_MS = 20000;
+
+/**
+ * Release the lock and put the button back the way the state says it should be.
+ *
+ * `micBtn.disabled = isCapturing` rather than `false`: if capture:state has
+ * already landed then listening has begun and the button belongs disabled, and
+ * unconditionally re-enabling it here would undo that.
+ */
+function endCaptureStart() {
+  captureStarting = false;
+  clearTimeout(captureStartTimeout);
+  captureStartTimeout = null;
+  micBtn.removeAttribute('aria-busy');
+  micBtn.disabled = isCapturing;
+}
+
 async function startCapture() {
-  if (isCapturing) return;
+  if (isCapturing || captureStarting) return;
 
   if (!selectedDeviceId) await pickDevice();
 
+  captureStarting = true;
+  micBtn.disabled = true;
+  micBtn.setAttribute('aria-busy', 'true');
+  // Same escape hatch as the main window: a mic button that can never be
+  // pressed again is a worse outcome than the double-press it is guarding.
+  clearTimeout(captureStartTimeout);
+  captureStartTimeout = setTimeout(() => {
+    if (!captureStarting) return;
+    console.warn('Widget: capture:state never arrived; releasing the start lock.');
+    endCaptureStart();
+  }, CAPTURE_START_TIMEOUT_MS);
   try {
     placeholderEl.textContent = placeholderDefaultText;
     const { token, captureId } = await getDeepgramToken('mic');
@@ -476,6 +523,10 @@ async function startCapture() {
       deepgramToken: token,
     });
   } catch (err) {
+    // Released on every failure path, including the quota one that returns
+    // early — the whole point of that branch is a mic the user can still press
+    // once they understand why it stopped.
+    endCaptureStart();
     const msg = String(err?.message ?? err);
     if (err?.quotaExceeded) {
       // The widget has no alert affordance and hiding this in the console
@@ -489,6 +540,8 @@ async function startCapture() {
       console.error('Widget start_capture_cmd error:', err);
     }
   }
+  // Held on success until capture:state lands in setListening — the command
+  // resolving means Rust accepted the session, not that audio is flowing.
 }
 
 async function stopCapture() {
