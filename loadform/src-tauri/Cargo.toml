@@ -1,6 +1,8 @@
 [package]
 name = "loadform"
-version = "0.1.0"
+# Not the shipped app version — tauri.conf.json reads that from ../package.json.
+# Kept in sync only so `cargo` metadata isn't misleading.
+version = "0.3.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
