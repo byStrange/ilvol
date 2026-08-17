@@ -789,7 +789,7 @@
             <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
             </svg>
-            <span class="hidden sm:inline">Admin</span>
+            <span class="lf-btn-label">Admin</span>
           </button>
           <button
             id="usage-pill"
@@ -800,25 +800,9 @@
               <path d="M3 3v18h18" /><path d="m7 15 3-3 3 3 5-5" />
             </svg>
             <span id="usage-pill-label">—</span>
-          </button>
-          <button
-            id="help-btn"
-            class="lf-help-btn h-9 w-9 rounded-xl flex items-center justify-center"
-            title="Replay the tutorial"
-          >
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>
-            </svg>
-          </button>
-          <button
-            id="widget-btn"
-            class="lf-icon-btn h-9 w-9 rounded-xl text-slate-300 flex items-center justify-center"
-            title="Floating widget"
-            aria-label="Toggle floating widget"
-          >
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="3" /><path d="M3 9h18" /><path d="M9 21V9" />
-            </svg>
+            <!-- Same figure, short enough to survive the narrowest header. Only
+                 one of the two is ever displayed; see .lf-usage-compact. -->
+            <span id="usage-pill-compact" class="lf-usage-compact">—</span>
           </button>
           <button
             id="my-stats-btn"
@@ -828,7 +812,7 @@
             <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 3v18h18" /><path d="m7 14 3-3 4 4 6-7" />
             </svg>
-            <span class="hidden sm:inline">My stats</span>
+            <span class="lf-btn-label">My stats</span>
           </button>
           <button
             id="history-btn"
@@ -838,17 +822,64 @@
             <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 7V5a2 2 0 0 1 2-2h2" /><path d="M17 3h2a2 2 0 0 1 2 2v2" /><path d="M21 17v2a2 2 0 0 1-2 2h-2" /><path d="M7 21H5a2 2 0 0 1-2-2v-2" /><rect x="7" y="7" width="10" height="10" rx="1" />
             </svg>
-            <span class="hidden sm:inline">History</span>
+            <span class="lf-btn-label">History</span>
           </button>
-          <button
-            id="settings-btn"
-            class="lf-icon-btn w-9 h-9 rounded-xl text-slate-300 flex items-center justify-center"
-            title="Settings"
-          >
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" />
-            </svg>
-          </button>
+
+          <!--
+            Utility actions. Above 1024px this wrapper is `display: contents`,
+            so the three buttons sit in the header row exactly as if it weren't
+            here. Below it, the wrapper becomes a positioned menu behind the ⋯
+            toggle. The same elements move either way — no second copy of a
+            button to keep in sync, and every id and listener stays put.
+          -->
+          <div class="lf-overflow" id="header-overflow">
+            <button
+              id="header-more-btn"
+              class="lf-icon-btn lf-overflow-toggle w-9 h-9 rounded-xl text-slate-300 items-center justify-center"
+              title="More"
+              aria-label="More actions"
+              aria-expanded="false"
+              aria-controls="header-overflow-items"
+            >
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" stroke="none">
+                <circle cx="12" cy="5" r="1.75" /><circle cx="12" cy="12" r="1.75" /><circle cx="12" cy="19" r="1.75" />
+              </svg>
+            </button>
+            <div class="lf-overflow-items" id="header-overflow-items">
+              <button
+                id="help-btn"
+                class="lf-help-btn h-9 w-9 rounded-xl flex items-center justify-center"
+                title="Replay the tutorial"
+              >
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>
+                </svg>
+                <span class="lf-overflow-label">Tutorial</span>
+              </button>
+              <button
+                id="widget-btn"
+                class="lf-icon-btn h-9 w-9 rounded-xl text-slate-300 flex items-center justify-center"
+                title="Floating widget"
+                aria-label="Toggle floating widget"
+              >
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="3" width="18" height="18" rx="3" /><path d="M3 9h18" /><path d="M9 21V9" />
+                </svg>
+                <span class="lf-overflow-label">Floating widget</span>
+              </button>
+              <button
+                id="settings-btn"
+                class="lf-icon-btn w-9 h-9 rounded-xl text-slate-300 flex items-center justify-center"
+                title="Settings"
+              >
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" />
+                </svg>
+                <span class="lf-overflow-label">Settings</span>
+              </button>
+            </div>
+          </div>
+
           <!-- Custom window controls (frameless main window) -->
           <div class="lf-win-controls" aria-label="Window controls">
             <button id="win-minimize" class="lf-win-btn" title="Minimize" aria-label="Minimize">

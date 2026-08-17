@@ -10,7 +10,9 @@ mod config;
 mod layer_shell;
 mod placement;
 
-use audio_capture::{list_audio_devices, start_capture, CaptureHandle, CaptureOptions, AudioDevice};
+use audio_capture::{
+    list_audio_devices, start_capture, AudioDevice, CaptureHandle, CaptureOptions,
+};
 use config::ConfigState;
 
 /// Live data for every open planet window, keyed by field key.
@@ -615,7 +617,22 @@ fn start_capture_cmd(
         mix_system_audio,
     };
 
-    let handle = start_capture(app.clone(), deepgram_token, options)?;
+    // Clears the handle if the session ends without anyone calling
+    // `stop_capture` — a dead Deepgram socket, an unplugged mic, a stream that
+    // simply ended. The token check is what makes this safe to run late: by the
+    // time a stranded thread gets here the user may already be recording again,
+    // and clearing that session's handle would leave a live capture unstoppable.
+    let exit_app = app.clone();
+    let handle = start_capture(app.clone(), deepgram_token, options, move |session| {
+        let state = exit_app.state::<CaptureState>();
+        let mut guard = state.handle.lock().unwrap();
+        if !guard.as_ref().is_some_and(|h| session.matches(h)) {
+            return; // already stopped, or a newer session owns the slot now
+        }
+        *guard = None;
+        drop(guard); // never emit under the lock
+        let _ = exit_app.emit("capture:state", serde_json::json!({ "running": false }));
+    })?;
     *guard = Some(handle);
     let _ = app.emit(
         "capture:state",

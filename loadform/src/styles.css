@@ -444,11 +444,41 @@ body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 2rem;
-  min-height: calc(100vh - 9rem); /* fill viewport minus header/footer */
 }
-@media (min-width: 1024px) {
+
+/*
+ * Two columns as soon as two columns fit — which used to mean 1024px, a
+ * threshold the app's own default 800×600 window sat below. Everyone opening
+ * LoadForm for the first time therefore got the stacked layout: orb on top,
+ * the extracted load underneath and off-screen. Sixteen field cards stack to
+ * roughly 1300px, so reading the load you were capturing meant scrolling the
+ * orb out of view mid-call. Side by side the same cards pair up into eight
+ * rows and about half that height.
+ *
+ * The columns are then bounded to the viewport and scrolled internally, so the
+ * fields can be long without the orb and the status line ever leaving the
+ * screen. `safe center` keeps the centring from hiding the top of a column
+ * that outgrows it; a webview too old to know the keyword drops this
+ * declaration and keeps the plain `center` above, which is the current
+ * behaviour rather than a broken one.
+ */
+@media (min-width: 768px) {
   .lf-app-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: 1.5rem;
+    height: calc(100vh - 9rem); /* fill viewport minus header/footer */
+  }
+
+  .lf-col-capture,
+  .lf-col-fields {
+    min-height: 0; /* a grid item's auto minimum otherwise refuses to shrink */
+    overflow-y: auto;
+    justify-content: safe center;
+  }
+}
+
+@media (min-width: 1024px) {
+  .lf-app-grid {
     gap: 3rem;
   }
 }
@@ -465,14 +495,148 @@ body {
   flex-direction: column;
   justify-content: center;
 }
+/*
+ * Sized against the column it sits in, not the viewport. The old 640px media
+ * query asked the wrong question: once the app went two-column, a 768px window
+ * still reported "wide" and put two field cards into a 340px column. auto-fit
+ * measures the space actually available, so the cards pair up on a wide screen
+ * and stay single-file inside a narrow column without a breakpoint to maintain.
+ *
+ * The 13rem floor is set so the pairing still happens from 1024px up, where it
+ * always did, and stops below it: a card spends 2.5rem on its icon plus the gap
+ * and padding either side before any text, so anything narrower than this puts
+ * "Delivery Date/Time" and its value in a space neither of them fits.
+ */
 .lf-fields-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
   gap: 0.625rem;
 }
-@media (min-width: 640px) {
-  .lf-fields-grid {
-    grid-template-columns: 1fr 1fr;
+
+/* ─── Header overflow menu ──────────────────────────────────────────────────
+ *
+ * The capture header carries a brand block, up to two pills, six actions and
+ * three window controls on one row. Fully laid out that is around 917px of
+ * content, so anything under roughly a 1000px window overlapped — at 728px the
+ * actions ran into the wordmark. There is no scrollbar to rescue it either:
+ * the window is frameless and the row cannot scroll sideways.
+ *
+ * Below 1024px the three utility actions collapse behind a ⋯ toggle and the
+ * remaining buttons drop their text. What stays visible under every width is
+ * what someone needs mid-call without hunting: the quota pill, the screens
+ * they switch between, and the window controls.
+ *
+ * The switch is done with `display: contents` rather than by moving nodes in
+ * JS, so the wide layout is the markup unchanged and there is exactly one copy
+ * of each button — no duplicate ids, no listeners to rebind on resize.
+ */
+
+.lf-overflow {
+  display: contents;
+}
+
+.lf-overflow-toggle {
+  display: none;
+}
+
+.lf-overflow-items {
+  display: contents;
+}
+
+/* Only ever seen inside the open panel, where an icon alone says too little. */
+.lf-overflow-label {
+  display: none;
+}
+
+/* The short form of the quota pill ("1/3"), swapped in at the width where the
+ * sentence form stops fitting. Two spans rather than a shorter string, because
+ * the pill has to stay readable at 1200px too. */
+.lf-usage-compact {
+  display: none;
+}
+
+/* Last-resort backstop at every width. The overflow menu is what keeps the row
+ * fitting; this is what happens if some combination still doesn't — the actions
+ * drop to a second line instead of off the right edge, where a frameless window
+ * gives no way to reach them. */
+#app > header {
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+@media (max-width: 1023px) {
+  .lf-btn-label {
+    display: none;
+  }
+
+  .lf-overflow {
+    display: block;
+    position: relative;
+  }
+
+  .lf-overflow-toggle {
+    display: flex;
+  }
+
+  .lf-overflow-items {
+    display: none;
+    position: absolute;
+    top: calc(100% + 0.5rem);
+    right: 0;
+    z-index: 60;
+    flex-direction: column;
+    gap: 0.125rem;
+    min-width: 12rem;
+    padding: 0.375rem;
+    border-radius: 0.875rem;
+    border: 1px solid var(--lf-border);
+    /* Opaque, unlike the glass used elsewhere: this floats over live transcript
+     * text, and blurred slate over moving words is unreadable. */
+    background: #0f172a;
+    box-shadow: 0 18px 38px rgba(2, 6, 23, 0.55);
+  }
+
+  .lf-overflow.is-open .lf-overflow-items {
+    display: flex;
+  }
+
+  /* Full-width rows inside the panel: the buttons are square icons in the
+   * header, and a menu of three 36px squares is not a menu. */
+  .lf-overflow-items > button {
+    width: 100%;
+    height: 2.25rem;
+    justify-content: flex-start;
+    gap: 0.625rem;
+    padding: 0 0.625rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: #cbd5e1;
+  }
+
+  .lf-overflow-items .lf-overflow-label {
+    display: inline;
+  }
+
+  /* Duplicates the status headline directly below it, and costs the row the
+   * width it is short of. ID selector to beat Tailwind's .hidden either way. */
+  #status-badge {
+    display: none;
+  }
+}
+
+/*
+ * With the labels gone and the utilities behind ⋯, the quota pill is the widest
+ * thing left in the row, and the row runs out of width around 665px. Swapping
+ * the sentence for the figure buys back roughly 85px, which is what keeps the
+ * header on one line down to the 420px minimum instead of wrapping to two.
+ */
+@media (max-width: 700px) {
+  #usage-pill-label {
+    display: none;
+  }
+
+  .lf-usage-compact {
+    display: inline;
   }
 }
 
@@ -1733,7 +1897,14 @@ button {
  */
 
 /* Collapse the sidebar to an icon rail. */
-@media (max-width: 720px) {
+/*
+ * Compact chrome for the console. The trigger was 720px, which left a 728px
+ * window spending 240px of it — a third — on a nav of three items, and the
+ * reports squeezed into what was left. Icons-only from 900px down: the pane
+ * roughly doubles, and the nav is three entries with tooltips, not something
+ * anyone needs the words for once they have been here twice.
+ */
+@media (max-width: 900px) {
   .lf-admin-sidebar {
     width: 3.75rem;
     padding-left: 0.5rem;
@@ -1752,10 +1923,10 @@ button {
     justify-content: center;
   }
 
-  /* The topbar carries a title and its actions on one row. Below this width
-   * the two stop fitting, and a nowrap flex row does not fail gracefully —
-   * it pushes the buttons off the right edge of a pane that cannot scroll
-   * sideways. Wrapping puts them on their own line instead. */
+  /* The topbar carries a title and its actions on one row. Wrapping is the
+   * backstop for where the two stop fitting: a nowrap flex row does not fail
+   * gracefully, it pushes the buttons off the right edge of a pane that cannot
+   * scroll sideways. It only takes effect if they actually collide. */
   .lf-admin-topbar {
     flex-wrap: wrap;
     gap: 0.625rem;
@@ -1800,9 +1971,6 @@ button {
 
   .lf-app-grid {
     gap: 1.25rem;
-    /* The two-column desktop rule never applies here, so the stacked columns
-     * only need to clear the header — not fill a viewport they now overflow. */
-    min-height: 0;
   }
 
   .lf-col-capture {
@@ -1833,13 +2001,7 @@ button {
     font-size: 1.25rem;
   }
 
-  /* The capture header carries a brand block, two pills and four icon buttons
-   * on one nowrap row. It is the first thing to overflow, and it overflows off
-   * the right edge where a frameless window has no scrollbar to reveal it.
-   * Allowed to wrap as the backstop, with the two most redundant things
-   * dropped first so it usually does not need to. */
   #app > header {
-    flex-wrap: wrap;
     gap: 0.5rem;
     padding-top: 0.875rem;
     padding-bottom: 0.875rem;
@@ -1851,13 +2013,6 @@ button {
     display: none;
   }
 
-  /* The status pill says "Recording" three inches above a headline that says
-   * "Listening…". One of them can go, and it is the one that costs the row
-   * the room it is short of. ID selector to beat Tailwind's .hidden toggling
-   * either way — this stays hidden at this width regardless of state. */
-  #status-badge {
-    display: none;
-  }
 }
 
 /* ─── Pending-invite banner ────────────────────────────────────────────── */
