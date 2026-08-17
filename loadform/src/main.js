@@ -188,6 +188,9 @@ let currentCaptureId = null;
 let captureStartedAt = null;
 let lastExtractTime = 0;
 const AUTO_EXTRACT_DEBOUNCE_MS = 4000;
+// Set while no capture owns the form, so a late transcript:complete from the
+// session that just ended is dropped rather than applied to the next load.
+let discardTranscriptComplete = true;
 
 // ─── Load History State ─────────────────────────────────────────────────────
 
@@ -769,6 +772,13 @@ async function startCapture() {
   // this point (no device selected) leaves the orb untouched and usable.
   beginCaptureStart();
   try {
+    // Backstop for a backend session this window has lost track of. Reaching
+    // here means the UI believes nothing is recording, so anything the backend
+    // still holds is stranded by definition and safe to end — and ending it is
+    // the difference between starting the next call and being told "Capture
+    // already running" with no way to clear it but a restart.
+    await clearStrandedCapture();
+
     // Mint a fresh short-lived Deepgram token per capture. This is also the
     // server-side gate where quota will be enforced, so a failure here is a
     // legitimate reason not to start.
@@ -831,6 +841,8 @@ function enterListeningUI() {
   // here rather than in startCapture because this also covers a session
   // started from the widget, and a capture adopted after a page reload.
   endCaptureStart();
+  clearingStrandedCapture = false; // a stop still pending here is moot now
+  discardTranscriptComplete = false; // this session's completion is wanted
   accumulatedTranscript = '';
   transcriptWords = [];
   currentExtractedData = null;
@@ -912,6 +924,47 @@ async function reconcileCaptureState() {
   enterListeningUI();
 }
 
+/**
+ * End a backend capture this window is no longer tracking.
+ *
+ * Only ever called from the start path, where `isCapturing` is false: a
+ * session the backend still holds at that point belongs to nobody. Silent by
+ * design — there is nothing here a dispatcher can act on, and the outcome they
+ * care about is the capture that starts immediately afterwards.
+ */
+let clearingStrandedCapture = false;
+
+async function clearStrandedCapture() {
+  try {
+    if (!(await tauriInvoke('is_capture_running'))) return;
+    console.warn('Clearing a capture the UI had lost track of.');
+    clearingStrandedCapture = true;
+    await tauriInvoke('stop_capture');
+  } catch {
+    // No Tauri runtime (plain `vite dev`), or it stopped on its own between
+    // the two calls. Either way there is nothing left to clear.
+  }
+}
+
+/**
+ * The capture died on its own — a dropped Deepgram socket, a mic that went
+ * away. Rust clears the handle and follows this with capture:state
+ * { running: false }, so the UI unwinds itself; this exists to say why.
+ *
+ * Without a listener here the alternative was silence: the orb stayed on
+ * "Listening…" over a transcript that would never gain another word.
+ */
+function onCaptureError(payload) {
+  const message = typeof payload === 'string' ? payload : payload?.message;
+  console.error('capture failed:', message);
+  // Alert rather than the save-status chip: this is also the *only* report of
+  // a capture that fails a moment after starting, since start_capture_cmd
+  // returns as soon as the thread is spawned and so resolves fine. Interrupting
+  // a live call is bad; letting someone keep talking to a recorder that stopped
+  // taking words is worse, and the chip is not something you notice mid-call.
+  alert('Recording stopped: ' + (message || 'audio capture failed'));
+}
+
 function onCaptureState(payload) {
   if (payload?.running) {
     // Sync the device/mix controls to reflect what's actually capturing, so
@@ -925,6 +978,16 @@ function onCaptureState(payload) {
     }
     enterListeningUI();
   } else {
+    // The stop we asked for ourselves while starting, in clearStrandedCapture.
+    // Consumed without unwinding anything: the UI is mid-start, and letting
+    // this reach exitListeningUI would drop the start lock that the capture now
+    // being started is relying on — reopening the double-press it exists to
+    // prevent. Rust emits this before the new session's `running: true`, and
+    // events arrive in order, so it is always this stop being acknowledged.
+    if (clearingStrandedCapture) {
+      clearingStrandedCapture = false;
+      return;
+    }
     exitListeningUI();
   }
 }
@@ -977,6 +1040,12 @@ function onTranscriptChunk(chunk) {
 }
 
 function onTranscriptComplete(event) {
+  // The capture thread emits this while unwinding, which takes long enough that
+  // it can land *after* "Finish & start next load" has already stopped the
+  // capture, saved and cleared the form. Applying it then would seed the next
+  // load with the previous call's words — and the next manual Extract would
+  // turn them into a second load with the same content.
+  if (discardTranscriptComplete) return;
   const text = event.payload?.text || '';
   if (text) {
     accumulatedTranscript = text;
@@ -999,10 +1068,25 @@ function debouncedAutoExtract() {
   }, 1500);
 }
 
+// True from the moment an extraction starts until it has rendered and saved.
+// debouncedAutoExtract only ever held off the *timer*: once it fired it nulled
+// itself, leaving a fresh one free to be scheduled and fire while the first
+// extraction was still waiting on the model. Two runs then raced, each billing
+// its own usage event for the same transcript.
+let extractInFlight = false;
+
 async function performExtract(showSpinner = true) {
   if (!accumulatedTranscript.trim()) {
     return;
   }
+  // Nothing is lost by dropping this one: the run already going reads the same
+  // accumulated transcript, and the next debounce tick covers anything said
+  // since. Checked before any UI change so a dropped manual press does not
+  // leave a spinner nobody will clear.
+  if (extractInFlight) {
+    return;
+  }
+  extractInFlight = true;
 
   if (showSpinner) {
     setStatus('processing');
@@ -1058,6 +1142,7 @@ async function performExtract(showSpinner = true) {
     }
     if (isCapturing) setStatus('listening');
   } finally {
+    extractInFlight = false;
     if (showSpinner) {
       setExtractingUI(false);
     }
@@ -1214,6 +1299,15 @@ async function writeTextToClipboard(text) {
 
 // "New Load": persist any final edits to the current load, then start fresh.
 async function handleNewLoad() {
+  // The call this load came from is over, so end the recording before anything
+  // else. resetForm() below only sets `isCapturing = false` — it never told the
+  // backend, which went on recording into the next conversation while the orb
+  // sat there looking idle. Pressing that orb for the next call then hit a
+  // backend that still held the old session and refused with "Capture already
+  // running", and the abandoned stream kept billing Deepgram minutes that
+  // reportCaptureEnded never got to record. Awaited so the final transcript and
+  // the duration land before the state they are read from is cleared.
+  if (isCapturing) await stopCapture();
   if (currentExtractedData && currentUser) {
     // Only ask about loads that are still open. Re-opening a resolved load to
     // fix a typo and being re-interrogated about it teaches dispatchers to
@@ -1286,6 +1380,9 @@ function askLoadOutcome({ lane: laneOverride } = {}) {
 }
 
 function resetForm() {
+  // Anything the finished capture still has to say arrives too late to belong
+  // to anything. See onTranscriptComplete.
+  discardTranscriptComplete = true;
   accumulatedTranscript = '';
   transcriptWords = [];
   currentExtractedData = null;
@@ -1323,10 +1420,34 @@ function resetForm() {
 
 // ─── Load History ────────────────────────────────────────────────────────────
 
+// Saves run one at a time, in the order they were asked for.
+//
+// The insert-or-update decision reads `currentLoadId`, which is only assigned
+// once the write it came from has returned. Two saves in flight together
+// therefore both read null and both INSERT — the same load stored twice. It
+// takes 5.5s to line up (a 4s extract gate plus a 1.5s debounce) and an
+// extraction over a long transcript clears that easily, which is why it showed
+// up on real calls and never in testing.
+//
+// Serialising is the fix rather than a boolean guard because no save here is
+// droppable: the second one carries newer field edits, or the outcome answer.
+// They all have to happen, just not at once.
+let saveChain = Promise.resolve();
+
+function saveCurrentLoad(answer = null) {
+  const next = saveChain.then(
+    () => runSave(answer),
+    () => runSave(answer), // a failed save must not cancel the ones queued behind it
+  );
+  // Kept un-rejected so one failure cannot poison every future link.
+  saveChain = next.catch(() => {});
+  return next;
+}
+
 // Persist the current in-memory load to Supabase. Inserts a new row when there
 // is no currentLoadId (first save), otherwise updates the existing row.
 // Never throws — a save failure is logged but does not block the UI.
-async function saveCurrentLoad(answer = null) {
+async function runSave(answer = null) {
   if (!currentUser || !currentExtractedData) return;
   setSaveStatus('saving');
   const { id } = await saveLoad(
@@ -3394,12 +3515,39 @@ async function handleAdminRosterClick(e) {
   }
 
   const member = orgRoster.find((m) => m.id === memberId);
+  if (!confirmRemoval(member)) return;
   const { ok, error } = await removeMember(supabase, memberId, member?.status);
   if (!ok) {
     showAdminError(error || 'Could not remove member');
     return;
   }
   await handlePostRosterMutation(memberId);
+}
+
+/**
+ * Confirm removing someone from the org.
+ *
+ * Sat directly beside "Reset password", which has always confirmed, while the
+ * more destructive of the two fired on a single click.
+ *
+ * The two cases are not equally bad and are not described as though they were.
+ * Removing an active member deactivates the row (status = 'removed'), so their
+ * loads, history and figures survive and an owner can put them back. Revoking
+ * an invite *deletes* it, and the password that went with it was handed over in
+ * person and is stored nowhere — so that one is genuinely unrecoverable, and
+ * says so.
+ */
+function confirmRemoval(member) {
+  const who = member?.invited_email || 'this dispatcher';
+  return window.confirm(
+    member?.status === 'invited'
+      ? `Revoke the invite for ${who}? They won't be able to sign in with the ` +
+          "password you gave them, and it can't be undone — you'd have to invite " +
+          'them again and hand over a new one.'
+      : `Remove ${who} from the organization? They lose access straight away. ` +
+          'Their loads and figures stay in your reports, and you can invite them ' +
+          'back later.'
+  );
 }
 
 async function handleAdminRoleChange(e) {
@@ -3669,6 +3817,9 @@ window.addEventListener('DOMContentLoaded', () => {
     });
     window.__TAURI__.event.listen('audio:level', (event) => {
       onAudioLevel(event.payload);
+    });
+    window.__TAURI__.event.listen('capture:error', (event) => {
+      onCaptureError(event.payload);
     });
   }
 

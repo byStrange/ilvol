@@ -444,11 +444,41 @@ body {
   display: grid;
   grid-template-columns: 1fr;
   gap: 2rem;
-  min-height: calc(100vh - 9rem); /* fill viewport minus header/footer */
 }
-@media (min-width: 1024px) {
+
+/*
+ * Two columns as soon as two columns fit — which used to mean 1024px, a
+ * threshold the app's own default 800×600 window sat below. Everyone opening
+ * LoadForm for the first time therefore got the stacked layout: orb on top,
+ * the extracted load underneath and off-screen. Sixteen field cards stack to
+ * roughly 1300px, so reading the load you were capturing meant scrolling the
+ * orb out of view mid-call. Side by side the same cards pair up into eight
+ * rows and about half that height.
+ *
+ * The columns are then bounded to the viewport and scrolled internally, so the
+ * fields can be long without the orb and the status line ever leaving the
+ * screen. `safe center` keeps the centring from hiding the top of a column
+ * that outgrows it; a webview too old to know the keyword drops this
+ * declaration and keeps the plain `center` above, which is the current
+ * behaviour rather than a broken one.
+ */
+@media (min-width: 768px) {
   .lf-app-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: 1.5rem;
+    height: calc(100vh - 9rem); /* fill viewport minus header/footer */
+  }
+
+  .lf-col-capture,
+  .lf-col-fields {
+    min-height: 0; /* a grid item's auto minimum otherwise refuses to shrink */
+    overflow-y: auto;
+    justify-content: safe center;
+  }
+}
+
+@media (min-width: 1024px) {
+  .lf-app-grid {
     gap: 3rem;
   }
 }
@@ -465,15 +495,22 @@ body {
   flex-direction: column;
   justify-content: center;
 }
+/*
+ * Sized against the column it sits in, not the viewport. The old 640px media
+ * query asked the wrong question: once the app went two-column, a 768px window
+ * still reported "wide" and put two field cards into a 340px column. auto-fit
+ * measures the space actually available, so the cards pair up on a wide screen
+ * and stay single-file inside a narrow column without a breakpoint to maintain.
+ *
+ * The 13rem floor is set so the pairing still happens from 1024px up, where it
+ * always did, and stops below it: a card spends 2.5rem on its icon plus the gap
+ * and padding either side before any text, so anything narrower than this puts
+ * "Delivery Date/Time" and its value in a space neither of them fits.
+ */
 .lf-fields-grid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
   gap: 0.625rem;
-}
-@media (min-width: 640px) {
-  .lf-fields-grid {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
 /* ─── Save status ───────────────────────────────────────────────────────────
@@ -1800,9 +1837,6 @@ button {
 
   .lf-app-grid {
     gap: 1.25rem;
-    /* The two-column desktop rule never applies here, so the stacked columns
-     * only need to clear the header — not fill a viewport they now overflow. */
-    min-height: 0;
   }
 
   .lf-col-capture {

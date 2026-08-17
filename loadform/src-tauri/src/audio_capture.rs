@@ -122,6 +122,21 @@ impl CaptureHandle {
     }
 }
 
+/// Identifies the capture session a finished thread belonged to.
+///
+/// Handed to `start_capture`'s `on_exit` callback so the owner of the handle
+/// can tell "my session ended" from "some older session ended". Without it a
+/// thread that exits late — after the user already stopped it and started
+/// another — would clear the *new* session's handle and kill a live recording.
+pub struct CaptureToken(Arc<AtomicBool>);
+
+impl CaptureToken {
+    /// True when `handle` is the session this token was issued for.
+    pub fn matches(&self, handle: &CaptureHandle) -> bool {
+        Arc::ptr_eq(&self.0, &handle.stop_flag)
+    }
+}
+
 // ─── List Available Audio Devices ───────────────────────────────────────────
 
 pub fn list_audio_devices() -> Vec<AudioDevice> {
@@ -176,13 +191,24 @@ pub struct CaptureOptions {
 
 /// `deepgram_token` is an ephemeral access token from the `deepgram-token`
 /// Edge Function. It is passed per-capture and never persisted.
+///
+/// `on_exit` runs on the capture thread once it has finished, however it
+/// finished — stopped, errored, or ended by itself. This function returns as
+/// soon as the thread is spawned, so its `Ok` means "the session started", not
+/// "the session is live"; `on_exit` is the only signal that says it is over
+/// when nobody asked it to be. Leaving that unreported is what stranded the
+/// handle: a capture whose Deepgram socket dropped a second in stayed `Some`
+/// forever, so `is_capture_running` lied and every later start was refused
+/// with "Capture already running".
 pub fn start_capture(
     app_handle: AppHandle,
     deepgram_token: String,
     options: CaptureOptions,
+    on_exit: impl FnOnce(CaptureToken) + Send + 'static,
 ) -> Result<CaptureHandle, String> {
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_clone = stop_flag.clone();
+    let exit_flag = stop_flag.clone();
 
     std::thread::spawn(move || {
         let rt = Runtime::new().expect("Failed to create tokio runtime");
@@ -202,6 +228,7 @@ pub fn start_capture(
                 eprintln!("[audio_capture] error: {}", e);
             }
         });
+        on_exit(CaptureToken(exit_flag));
     });
 
     Ok(CaptureHandle { stop_flag })
