@@ -292,6 +292,9 @@ const els = {
   // Usage display
   usagePill: document.getElementById('usage-pill'),
   usagePillLabel: document.getElementById('usage-pill-label'),
+  usagePillCompact: document.getElementById('usage-pill-compact'),
+  headerOverflow: document.getElementById('header-overflow'),
+  headerMoreBtn: document.getElementById('header-more-btn'),
   usagePeriod: document.getElementById('usage-period'),
   usageToday: document.getElementById('usage-today'),
   usageMonth: document.getElementById('usage-month'),
@@ -789,7 +792,10 @@ async function startCapture() {
     // The grant response already carries the post-increment count, so the
     // counter can drop immediately without another round trip mid-capture.
     if (capturesLimit !== null && capturesRemaining !== null) {
-      els.usagePillLabel.textContent = `${capturesRemaining} of ${capturesLimit} loads left`;
+      setUsagePill(
+        `${capturesRemaining} of ${capturesLimit} loads left`,
+        `${capturesRemaining}/${capturesLimit}`
+      );
     }
     captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
@@ -1416,6 +1422,51 @@ function resetForm() {
   tauriEmit('load:reset');
 
   setStatus('idle');
+}
+
+/**
+ * Write the quota pill's two forms at once.
+ *
+ * Only one is ever on screen — CSS picks the sentence or the bare figure by
+ * width — but both are kept current so a resize never reveals a stale number.
+ */
+function setUsagePill(full, compact) {
+  if (els.usagePillLabel) els.usagePillLabel.textContent = full;
+  if (els.usagePillCompact) els.usagePillCompact.textContent = compact;
+}
+
+// ─── Header overflow menu ───────────────────────────────────────────────────
+//
+// Open state lives on the wrapper, so CSS decides whether the class means
+// anything: above 1024px the panel is `display: contents` and an is-open left
+// behind by a resize is inert.
+
+function setHeaderMenu(open) {
+  if (!els.headerOverflow) return;
+  els.headerOverflow.classList.toggle('is-open', open);
+  els.headerMoreBtn?.setAttribute('aria-expanded', String(open));
+}
+
+function initHeaderMenu() {
+  if (!els.headerMoreBtn || !els.headerOverflow) return;
+
+  els.headerMoreBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // else the document handler below closes it again
+    setHeaderMenu(!els.headerOverflow.classList.contains('is-open'));
+  });
+
+  // Choosing an action closes the menu. Listened for on the wrapper so it
+  // covers all three buttons and keeps working if a fourth is added; the
+  // buttons' own handlers are untouched and still run.
+  els.headerOverflow.addEventListener('click', (e) => {
+    if (e.target.closest('#header-more-btn')) return;
+    if (e.target.closest('button')) setHeaderMenu(false);
+  });
+
+  document.addEventListener('click', () => setHeaderMenu(false));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') setHeaderMenu(false);
+  });
 }
 
 // ─── Load History ────────────────────────────────────────────────────────────
@@ -2187,12 +2238,15 @@ async function refreshUsage() {
 
   els.usagePill.classList.remove('hidden');
   // Against a cap, the useful number is what's left, not what's spent.
-  els.usagePillLabel.textContent =
-    quota && quota.capturesLimit !== null
-      ? `${Math.max(0, quota.capturesLimit - quota.capturesUsed)} of ${quota.capturesLimit} loads left`
-      : usage.loadsToday === 1
-        ? '1 load today'
-        : `${usage.loadsToday} loads today`;
+  if (quota && quota.capturesLimit !== null) {
+    const left = Math.max(0, quota.capturesLimit - quota.capturesUsed);
+    setUsagePill(`${left} of ${quota.capturesLimit} loads left`, `${left}/${quota.capturesLimit}`);
+  } else {
+    setUsagePill(
+      usage.loadsToday === 1 ? '1 load today' : `${usage.loadsToday} loads today`,
+      String(usage.loadsToday)
+    );
+  }
 
   els.usageToday.textContent = usage.loadsToday;
   els.usageMonth.textContent = usage.loadsMonth;
@@ -3648,7 +3702,7 @@ async function handleLogout() {
   renderInviteBanner(); // clear a previous user's invites off the screen
   // Don't leave the previous user's counts on screen for the next sign-in.
   els.usagePill.classList.add('hidden');
-  els.usagePillLabel.textContent = '—';
+  setUsagePill('—', '—');
   hideSettingsModal();
   hideOrgModal();
   // Back to capture *after* clearing currentMembership, so the next sign-in
@@ -3774,6 +3828,8 @@ window.addEventListener('DOMContentLoaded', () => {
   if (els.helpBtn) {
     els.helpBtn.addEventListener('click', startTutorial);
   }
+
+  initHeaderMenu();
 
   // Custom frameless window controls
   if (els.winMinimize) els.winMinimize.addEventListener('click', minimizeMainWindow);
