@@ -846,10 +846,16 @@
               </svg>
             </button>
             <div class="lf-overflow-items" id="header-overflow-items">
+              <!--
+                Dev-only. The walkthrough runs itself once on a dispatcher's
+                first capture screen; this replay entry is unhidden by main.js
+                in dev builds and removed outright everywhere else, so it
+                starts hidden rather than flashing on load.
+              -->
               <button
                 id="help-btn"
-                class="lf-help-btn h-9 w-9 rounded-xl flex items-center justify-center"
-                title="Replay the tutorial"
+                class="lf-help-btn h-9 w-9 rounded-xl flex items-center justify-center hidden"
+                title="Replay the tutorial (dev)"
               >
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/>

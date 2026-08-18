@@ -746,10 +746,11 @@ body {
 
 /* ─── Onboarding tutorial ───────────────────────────────────────────────── */
 /*
- * Self-contained overlay shown on demand from the Help button. Animations
- * mirror the dispatcher-assistant reference: dim -> greeting -> intro ->
- * shortcut -> edge -> controls. Uses fixed-position coaching cards aligned
- * over the app real controls (voice orb + header buttons).
+ * Self-contained overlay for the first-run walkthrough (tutorial.js): a dim,
+ * a centred step — visual, heading, copy — and a Back/dots/Next row the
+ * reader drives themselves. The mock-ups inside each step are built from the
+ * same tokens as the surfaces they stand for, so they age with the app
+ * instead of going stale the way screenshots would.
  */
 
 .lf-tutorial {
@@ -835,102 +836,422 @@ body {
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Keyboard shortcut keycaps */
-.lf-keycaps {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.5rem;
-}
-.lf-keycap {
-  display: inline-flex;
-  min-width: 3.5rem;
-  align-items: center;
-  justify-content: center;
-  gap: 0.25rem;
-  border-radius: 0.75rem;
-  border: 1px solid var(--lf-border);
-  background: rgba(30, 41, 59, 0.9);
-  padding: 0.75rem 1rem;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 1rem;
-  font-weight: 500;
-  color: var(--lf-foreground);
-  animation: lf-keycap 0.5s ease-in-out both;
-}
-.lf-keycap-plus {
-  padding-bottom: 0.75rem;
-  font-size: 1.5rem;
-  color: var(--lf-muted-foreground);
-}
-@keyframes lf-keycap {
-  0%, 100% { transform: translateY(0); box-shadow: 0 3px 0 0 var(--lf-border); }
-  55% { transform: translateY(3px); box-shadow: 0 0 0 0 var(--lf-border); }
-}
+/* ─── Step body ─────────────────────────────────────────────────────────── */
 
-/* Coach marks row (static, flows inside the centered stage) */
-.lf-coach-row-static {
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
-  gap: 4rem;
-  flex-wrap: wrap;
-}
-.lf-coach-mark {
+.lf-tut-step {
   display: flex;
   flex-direction: column;
   align-items: center;
+  max-width: 34rem;
+  animation: lf-coach-in 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.lf-tut-visual {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 9.5rem;
+  margin-bottom: 2rem;
+  width: 100%;
+}
+
+.lf-tut-points {
+  margin-top: 1.25rem;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 30rem;
   animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: 0.15s;
 }
-.lf-coach-card {
-  width: 132px;
-  margin-bottom: 0.5rem;
-  border-radius: 0.75rem;
-  border: 1px solid var(--lf-border);
-  background: rgba(30, 41, 59, 0.95);
-  padding: 0.5rem 0.75rem;
-  text-align: center;
-  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
-}
-.lf-coach-card-title {
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--lf-foreground);
-}
-.lf-coach-card-desc {
-  margin-top: 0.125rem;
-  font-size: 0.6875rem;
-  line-height: 1.3;
+.lf-tut-points li {
+  position: relative;
+  padding-left: 1.1rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
   color: var(--lf-muted-foreground);
+  text-align: left;
+  text-wrap: pretty;
 }
-.lf-coach-arrow {
-  width: 1.25rem;
-  height: 1.25rem;
+.lf-tut-points li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.6rem;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--lf-primary);
+}
+.lf-tut-points b,
+.lf-tutorial-sub b {
+  color: var(--lf-foreground);
+  font-weight: 600;
+}
+
+/* ─── Step navigation ───────────────────────────────────────────────────── */
+
+.lf-tut-nav {
+  position: absolute;
+  left: 50%;
+  bottom: 2.5rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.lf-tut-btn {
+  border-radius: 999px;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.6);
+  padding: 0.6rem 1.4rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--lf-muted-foreground);
+  cursor: pointer;
+  transition: transform 0.15s ease, color 0.2s ease, border-color 0.2s ease;
+}
+.lf-tut-btn:hover:not(:disabled) {
+  color: var(--lf-foreground);
+  border-color: rgba(148, 163, 184, 0.3);
+}
+.lf-tut-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.lf-tut-btn.is-primary {
+  background: var(--lf-primary);
+  border-color: transparent;
+  color: var(--lf-primary-foreground);
+}
+.lf-tut-btn.is-primary:hover {
+  color: var(--lf-primary-foreground);
+  transform: scale(1.03);
+}
+.lf-tut-btn:active:not(:disabled) { transform: scale(0.97); }
+
+.lf-tut-dots {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.lf-tut-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.3);
+  transition: background-color 0.25s ease, width 0.25s ease;
+}
+.lf-tut-dot.is-active {
+  width: 18px;
+  background: var(--lf-primary);
+}
+
+/* ─── Step mock-ups ─────────────────────────────────────────────────────── */
+
+/* Orb */
+.lf-tut-orb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 7rem;
+  height: 7rem;
+}
+.lf-tut-orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  animation: lf-pulse 2.4s ease-in-out infinite;
+}
+.lf-tut-orb-core {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 4.5rem;
+  height: 4.5rem;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.4);
   color: var(--lf-primary);
 }
+.lf-tut-orb-core svg { width: 1.75rem; height: 1.75rem; }
 
-/* Flying arrow (edge phase) */
-.lf-arrow-fly {
-  width: 2rem;
-  height: 2rem;
-  animation: lf-arrow-fly 1.6s cubic-bezier(0.5, 0, 0.2, 1) forwards;
+/* Field cards */
+.lf-tut-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 26rem;
+}
+.lf-tut-card {
+  position: relative;
+  border-radius: 0.75rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.6);
+  padding: 0.6rem 0.75rem;
+  text-align: left;
+}
+.lf-tut-card-label {
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--lf-muted-foreground);
+}
+.lf-tut-card-value {
+  margin-top: 0.15rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--lf-foreground);
+}
+.lf-tut-card-conf {
+  position: absolute;
+  right: 0.6rem;
+  top: 0.6rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+}
+.lf-tut-card-conf.is-high {
+  background: rgba(16, 185, 129, 0.18);
+  color: #6ee7b7;
+}
+.lf-tut-card-conf.is-low {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fcd34d;
 }
 
-.lf-tutorial-cta {
-  margin-top: 1.5rem;
+/* Driver message */
+.lf-tut-msg {
+  width: 100%;
+  max-width: 26rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.6);
+  overflow: hidden;
+  text-align: left;
+}
+.lf-tut-msg-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.75rem;
+  border-bottom: 1px solid var(--lf-border);
+  font-size: 0.75rem;
+  color: var(--lf-muted-foreground);
+}
+.lf-tut-msg-copy {
   border-radius: 999px;
   background: var(--lf-primary);
   color: var(--lf-primary-foreground);
-  padding: 0.75rem 1.75rem;
-  font-size: 0.875rem;
+  padding: 0.2rem 0.7rem;
+  font-size: 0.6875rem;
   font-weight: 600;
-  border: none;
-  cursor: pointer;
-  transition: transform 0.15s ease;
-  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: 0.5s;
 }
-.lf-tutorial-cta:hover { transform: scale(1.03); }
-.lf-tutorial-cta:active { transform: scale(0.97); }
+.lf-tut-msg-body {
+  margin: 0;
+  padding: 0.75rem;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.6875rem;
+  line-height: 1.7;
+  color: rgba(248, 250, 252, 0.85);
+  white-space: pre-wrap;
+}
+
+/* Outcome prompt */
+.lf-tut-outcome {
+  width: 100%;
+  max-width: 17rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(15, 23, 42, 0.75);
+  padding: 0.85rem;
+}
+.lf-tut-outcome-q {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--lf-foreground);
+  margin-bottom: 0.25rem;
+}
+.lf-tut-outcome-btn {
+  border-radius: 0.6rem;
+  background: rgba(51, 65, 85, 0.55);
+  padding: 0.4rem 0.7rem;
+  font-size: 0.75rem;
+  color: var(--lf-muted-foreground);
+}
+.lf-tut-outcome-btn.is-primary {
+  background: var(--lf-primary);
+  color: var(--lf-primary-foreground);
+  font-weight: 600;
+}
+
+/* History rows */
+.lf-tut-rows {
+  width: 100%;
+  max-width: 24rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.lf-tut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-radius: 0.75rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.55);
+  padding: 0.55rem 0.75rem;
+}
+.lf-tut-row-lane {
+  font-size: 0.75rem;
+  color: var(--lf-foreground);
+}
+.lf-tut-row-badge {
+  font-size: 0.625rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+}
+.lf-tut-row-badge.is-booked { background: rgba(16, 185, 129, 0.18); color: #6ee7b7; }
+.lf-tut-row-badge.is-open { background: rgba(59, 130, 246, 0.18); color: #93c5fd; }
+.lf-tut-row-badge.is-lost { background: rgba(148, 163, 184, 0.16); color: var(--lf-muted-foreground); }
+
+/* Scorecard */
+.lf-tut-checks {
+  width: 100%;
+  max-width: 26rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.lf-tut-check {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.lf-tut-check-label {
+  flex: 0 0 11rem;
+  text-align: left;
+  font-size: 0.75rem;
+  color: var(--lf-muted-foreground);
+}
+.lf-tut-check-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  overflow: hidden;
+}
+.lf-tut-check-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+.lf-tut-check-fill.is-good { background: var(--lf-primary); }
+.lf-tut-check-fill.is-weak { background: #fbbf24; }
+.lf-tut-check-pct {
+  flex: 0 0 2.25rem;
+  text-align: right;
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--lf-muted-foreground);
+}
+
+/* Console tiles */
+.lf-tut-tiles {
+  display: flex;
+  gap: 0.6rem;
+}
+.lf-tut-tile {
+  border-radius: 0.9rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(30, 41, 59, 0.55);
+  padding: 0.75rem 1.1rem;
+}
+.lf-tut-tile-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--lf-foreground);
+}
+.lf-tut-tile-label {
+  margin-top: 0.15rem;
+  font-size: 0.625rem;
+  color: var(--lf-muted-foreground);
+}
+
+/* Floating widget: the sun, with field chips in orbit */
+.lf-tut-widget {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 9.5rem;
+}
+.lf-tut-sun {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 6.5rem;
+  height: 2.75rem;
+  border-radius: 0.9rem;
+  border: 1px solid var(--lf-border);
+  background: rgba(15, 23, 42, 0.9);
+}
+.lf-tut-sun-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--lf-primary);
+  margin-right: 4px;
+  animation: lf-pulse 1.6s ease-in-out infinite;
+}
+.lf-tut-sun-wave {
+  width: 2px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.5);
+  height: 10px;
+}
+.lf-tut-sun-wave:nth-child(3) { height: 18px; }
+.lf-tut-sun-wave:nth-child(4) { height: 7px; }
+.lf-tut-slot {
+  position: absolute;
+  transform: translate(-50%, -50%);
+}
+.lf-tut-planet {
+  display: inline-block;
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.12);
+  padding: 0.2rem 0.6rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: #6ee7b7;
+  animation: lf-coach-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Narrow windows: the app's minimum is 420x520, and the nav must stay clear
+   of the step body there rather than overlapping it. */
+@media (max-height: 640px), (max-width: 560px) {
+  .lf-tutorial-stage { padding: 3rem 1.25rem 6rem; justify-content: flex-start; }
+  .lf-tut-visual { min-height: 0; margin-bottom: 1.25rem; transform: scale(0.85); }
+  .lf-tutorial-title { font-size: 1.5rem; }
+  .lf-tutorial-sub { font-size: 0.9375rem; margin-top: 0.75rem; }
+  .lf-tut-nav { bottom: 1.25rem; gap: 1rem; }
+}
 
 /* Header help button (replays tutorial) */
 .lf-help-btn {

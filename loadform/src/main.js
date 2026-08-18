@@ -42,7 +42,7 @@ import {
   loadToDriverText,
   fetchMyLoadsDetailed,
 } from './loads.js';
-import { startTutorial } from './tutorial.js';
+import { startTutorial, showTutorialIfUnseen } from './tutorial.js';
 import {
   demoMembers,
   demoOrgLoads,
@@ -2611,6 +2611,14 @@ function setAppMode(mode, { persist = false } = {}) {
   }
   els.appView.classList.toggle('hidden', target === 'admin');
   els.adminView.classList.toggle('hidden', target !== 'admin');
+  // First time this dispatcher reaches the capture screen, walk them through
+  // it. Guarded on currentUser because signing out routes through here too,
+  // and it no-ops for anyone who has already seen (or skipped) it. Admins,
+  // who land in the console, get it if and when they switch over — with the
+  // console step included.
+  if (target === 'capture' && currentUser) {
+    showTutorialIfUnseen(currentUser.id, { includeAdmin: isOrgAdmin() });
+  }
   if (target === 'admin') {
     hideSettingsModal();
     hideOrgModal();
@@ -3824,9 +3832,20 @@ window.addEventListener('DOMContentLoaded', () => {
     els.widgetBtn.addEventListener('click', toggleWidgetWindow);
   }
 
-  // Tutorial replay (manual trigger)
+  // The walkthrough ships as a first-run experience only (see setAppMode).
+  // Dispatchers get it once, automatically; the header entry stays behind the
+  // dev flag so we can still replay it while working on it, and is stripped
+  // out of the built UI rather than sitting there as a button nobody presses.
   if (els.helpBtn) {
-    els.helpBtn.addEventListener('click', startTutorial);
+    if (import.meta.env.DEV) {
+      els.helpBtn.classList.remove('hidden');
+      els.helpBtn.addEventListener('click', () =>
+        startTutorial({ includeAdmin: isOrgAdmin() })
+      );
+    } else {
+      els.helpBtn.remove();
+      els.helpBtn = null;
+    }
   }
 
   initHeaderMenu();

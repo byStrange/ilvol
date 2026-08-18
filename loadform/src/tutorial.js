@@ -1,197 +1,379 @@
 /**
- * LoadForm — Onboarding tutorial (manual trigger)
+ * LoadForm — first-run walkthrough
  *
- * Ported from the dispatcher-assistant reference design. Shown on demand
- * from the Help button in the header. Phases:
+ * Shown once, automatically, the first time a signed-in user lands on the
+ * capture screen. There is no button for it in the shipped UI: the header
+ * entry is kept in dev builds only (see main.js) so we can replay it.
  *
- *   dim       → backdrop fades in
- *   greeting  → "Good to see you."
- *   intro     → "This is LoadForm." + tagline
- *   shortcut  → Ctrl + Shift + Q keycaps
- *   edge      → "It lives at the edge of your screen."
- *   controls  → coach marks + CTA
+ * Self-paced rather than timed. The previous version auto-advanced through
+ * six phases on a fixed timeline, which meant the reader either raced the
+ * clock or sat waiting, and it described a product we don't have: a
+ * Ctrl+Shift+Q global shortcut (nothing registers one) and a bar living at
+ * the edge of the screen (the widget is a draggable window with orbiting
+ * field chips). Every step below points at something the app actually does,
+ * using the labels it actually shows.
  *
- * The overlay is a single fixed root that fills the viewport. #lf-tut-stage
- * is the flex container itself (no nested stage divs), so content always
- * centers correctly. No storage flag — manual trigger only.
+ * Seen-state is per user id, so a shared dispatch-office machine walks each
+ * dispatcher through it once rather than once per computer.
  */
 
-const TIMELINE = [
-  { phase: 'greeting', at: 500 },
-  { phase: 'intro', at: 2500 },
-  { phase: 'shortcut', at: 5400 },
-  { phase: 'edge', at: 9200 },
-  { phase: 'controls', at: 11800 },
-];
+const SEEN_KEY_PREFIX = 'lf.tutorial-seen.v2.';
+
+/**
+ * Long enough for the capture screen to paint behind the overlay — and for
+ * the auth modal to be dismissed on the sign-in path, where the mode switch
+ * happens a line before it closes.
+ */
+const OPEN_DELAY_MS = 450;
 
 let activeOverlay = null;
-let escHandler = null;
-let timers = [];
+let keyHandler = null;
+let openTimer = null;
+let steps = [];
+let stepIndex = 0;
+let seenUserId = null;
 
-function clearTimers() {
-  timers.forEach(clearTimeout);
-  timers = [];
-}
+// ─── Step visuals ───────────────────────────────────────────────────────────
+//
+// Small mock-ups built from the same tokens as the real surfaces, so a step
+// reads as "that thing over there" rather than as decoration. They are
+// deliberately not screenshots: screenshots go stale silently.
 
-// ─── Phase renderers (return inner content for #lf-tut-stage) ───────────────
-
-function renderGreeting() {
-  return `<p class="lf-tutorial-title lg lf-coach">Good to see you.</p>`;
-}
-
-function renderIntro() {
+function orbVisual() {
   return `
-    <h2 class="lf-tutorial-title lg lf-coach">This is LoadForm.</h2>
-    <p class="lf-tutorial-sub">Turn a spoken load offer into a clean, driver-ready message — hands-free.</p>`;
-}
-
-function renderShortcut() {
-  return `
-    <div class="lf-keycaps lf-coach">
-      <kbd class="lf-keycap">Ctrl</kbd>
-      <span class="lf-keycap-plus">+</span>
-      <kbd class="lf-keycap" style="animation-delay:0.1s">Shift</kbd>
-      <span class="lf-keycap-plus">+</span>
-      <kbd class="lf-keycap" style="animation-delay:0.2s">Q</kbd>
-    </div>
-    <p class="lf-tutorial-sub" style="animation-delay:0.4s">Toggle the mic from anywhere.</p>
-    <p class="lf-tutorial-sub sm" style="animation-delay:0.7s">One shortcut starts a load offer — even while you're in another app.</p>`;
-}
-
-function renderEdge() {
-  return `
-    <div class="lf-coach" style="display:flex;align-items:center;color:var(--lf-primary);">
-      <span style="height:2px;width:6rem;background:linear-gradient(to right, transparent, var(--lf-primary));"></span>
-      <svg class="lf-arrow-fly" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-    </div>
-    <p class="lf-tutorial-sub" style="margin-top:2.5rem;animation-delay:0.3s;color:var(--lf-foreground);">It lives at the edge of your screen.</p>
-    <p class="lf-tutorial-sub sm" style="animation-delay:0.6s">Always a shortcut away — never in your way.</p>`;
-}
-
-function coachMark(title, desc, delay) {
-  return `
-    <div class="lf-coach-mark" style="animation-delay:${delay}">
-      <div class="lf-coach-card">
-        <p class="lf-coach-card-title">${title}</p>
-        <p class="lf-coach-card-desc">${desc}</p>
-      </div>
-      <svg class="lf-coach-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>
+    <div class="lf-tut-orb">
+      <span class="lf-tut-orb-ring"></span>
+      <span class="lf-tut-orb-core">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 19v3" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><rect x="9" y="2" width="6" height="13" rx="3" />
+        </svg>
+      </span>
     </div>`;
 }
 
-function renderControls() {
-  // Vertical flex: coach row, then heading, then CTA — all centered.
+function fieldCardsVisual() {
+  const card = (label, value, conf, cls) => `
+    <div class="lf-tut-card">
+      <p class="lf-tut-card-label">${label}</p>
+      <p class="lf-tut-card-value">${value}</p>
+      <span class="lf-tut-card-conf ${cls}">${conf}</span>
+    </div>`;
   return `
-    <div class="lf-coach-row-static">
-      ${coachMark('Listen', 'Tap the orb to start', '0.05s')}
-      ${coachMark('History', 'Open saved loads', '0.2s')}
-      ${coachMark('Send', 'Copy to your driver', '0.35s')}
-    </div>
-    <h3 class="lf-tutorial-title lf-coach" style="margin-top:2.5rem;animation-delay:0.45s">Three steps. That's the whole app.</h3>
-    <button type="button" id="lf-tut-done" class="lf-tutorial-cta">Start dispatching</button>`;
+    <div class="lf-tut-cards">
+      ${card('Pickup', 'Dallas, TX', '96%', 'is-high')}
+      ${card('Delivery', 'Memphis, TN', '91%', 'is-high')}
+      ${card('Rate', '$2,450', '88%', 'is-high')}
+      ${card('Weight', '42,000 lbs', '54%', 'is-low')}
+    </div>`;
 }
 
-// ─── Overlay controller ──────────────────────────────────────────────────────
+function driverMessageVisual() {
+  return `
+    <div class="lf-tut-msg">
+      <div class="lf-tut-msg-head">
+        <span>Driver-ready message</span>
+        <span class="lf-tut-msg-copy">Copy</span>
+      </div>
+      <pre class="lf-tut-msg-body">PU: Dallas, TX — Tue 8:00-12:00
+DEL: Memphis, TN — Wed 14:00
+Rate: $2,450 · 53' Dry Van · 42,000 lbs</pre>
+    </div>`;
+}
 
-function setPhase(phase) {
+function outcomeVisual() {
+  return `
+    <div class="lf-tut-outcome">
+      <p class="lf-tut-outcome-q">How did this one go?</p>
+      <span class="lf-tut-outcome-btn is-primary">Booked it</span>
+      <span class="lf-tut-outcome-btn">Didn't get it</span>
+      <span class="lf-tut-outcome-btn">Not yet — still working it</span>
+    </div>`;
+}
+
+function historyVisual() {
+  const row = (lane, badge, cls) => `
+    <div class="lf-tut-row">
+      <span class="lf-tut-row-lane">${lane}</span>
+      <span class="lf-tut-row-badge ${cls}">${badge}</span>
+    </div>`;
+  return `
+    <div class="lf-tut-rows">
+      ${row('Dallas, TX → Memphis, TN', 'Booked', 'is-booked')}
+      ${row('Laredo, TX → Atlanta, GA', 'Working', 'is-open')}
+      ${row('Fresno, CA → Denver, CO', 'Lost', 'is-lost')}
+    </div>`;
+}
+
+function scorecardVisual() {
+  const check = (label, pct, cls) => `
+    <div class="lf-tut-check">
+      <span class="lf-tut-check-label">${label}</span>
+      <span class="lf-tut-check-bar"><span class="lf-tut-check-fill ${cls}" style="width:${pct}%"></span></span>
+      <span class="lf-tut-check-pct">${pct}%</span>
+    </div>`;
+  return `
+    <div class="lf-tut-checks">
+      ${check('Asked for the rate', 92, 'is-good')}
+      ${check('Confirmed the equipment', 78, 'is-good')}
+      ${check('Named the appointment window', 41, 'is-weak')}
+    </div>`;
+}
+
+function consoleVisual() {
+  const tile = (value, label) => `
+    <div class="lf-tut-tile">
+      <p class="lf-tut-tile-value">${value}</p>
+      <p class="lf-tut-tile-label">${label}</p>
+    </div>`;
+  return `
+    <div class="lf-tut-tiles">
+      ${tile('34', 'Calls this week')}
+      ${tile('41%', 'Booked')}
+      ${tile('6', 'Dispatchers')}
+    </div>`;
+}
+
+function widgetVisual() {
+  const chips = [
+    { label: 'Pickup', x: -104, y: -30 },
+    { label: 'Rate', x: 104, y: -30 },
+    { label: 'Equipment', x: -96, y: 44 },
+    { label: 'Delivery', x: 100, y: 44 },
+  ];
+  // The chip sits in a positioned slot rather than carrying the offset
+  // itself: its entrance animation keyframes `transform`, and would drop any
+  // translate written on the same element.
+  return `
+    <div class="lf-tut-widget">
+      ${chips
+        .map(
+          (c, i) =>
+            `<span class="lf-tut-slot" style="left:calc(50% + ${c.x}px);top:calc(50% + ${c.y}px)">
+               <span class="lf-tut-planet" style="animation-delay:${i * 0.1}s">${c.label}</span>
+             </span>`
+        )
+        .join('')}
+      <div class="lf-tut-sun">
+        <span class="lf-tut-sun-dot"></span>
+        <span class="lf-tut-sun-wave"></span>
+        <span class="lf-tut-sun-wave"></span>
+        <span class="lf-tut-sun-wave"></span>
+      </div>
+    </div>`;
+}
+
+// ─── Steps ──────────────────────────────────────────────────────────────────
+
+function buildSteps({ includeAdmin = false } = {}) {
+  const list = [
+    {
+      title: 'This is LoadForm.',
+      sub: 'Read a broker’s offer out loud and walk away with a driver-ready dispatch — captured, filled in and saved before the call ends.',
+      visual: orbVisual(),
+    },
+    {
+      title: 'Start with the orb.',
+      sub: 'Tap it and LoadForm starts listening, then read the offer back as the broker gives it to you.',
+      points: [
+        '<b>Audio source &amp; options</b> under the orb picks what it hears.',
+        'Your microphone, the system audio from your softphone, or both mixed together.',
+      ],
+      visual: orbVisual(),
+    },
+    {
+      title: 'The form fills while they talk.',
+      sub: 'Auto-fill is on by default and re-reads the conversation on every pause, so pickup, delivery, rate and equipment land as they are said.',
+      points: [
+        'Each card carries the model’s confidence; a shaky one is flagged for a second look.',
+        'Every card is an input — correct anything that came out wrong and the message updates.',
+      ],
+      visual: fieldCardsVisual(),
+    },
+    {
+      title: 'A message your driver can read.',
+      sub: 'The captured load is rendered as plain dispatch text. <b>Copy</b> puts it on the clipboard, ready to paste wherever your drivers actually read.',
+      visual: driverMessageVisual(),
+    },
+    {
+      title: 'Finishing asks how it went.',
+      sub: 'The load is written to your history as you capture, so <b>Finish &amp; start next load</b> only asks the one thing the transcript can’t tell us — whether you got it.',
+      points: ['Picked the wrong one? Change the outcome later from Load History.'],
+      visual: outcomeVisual(),
+    },
+    {
+      title: 'Every load you captured, kept.',
+      sub: '<b>History</b> in the header lists what you’ve booked, lost and are still working. Open one to re-read the dispatch or hand it to a driver again.',
+      visual: historyVisual(),
+    },
+    {
+      title: 'How you’re running calls.',
+      sub: '<b>My stats</b> scores your own calls from your own transcripts: which steps you covered, with the quote that earned each mark, your outcome split and why loads were lost.',
+      points: ['It measures what was covered on the call, never how you sounded.'],
+      visual: scorecardVisual(),
+    },
+  ];
+
+  if (includeAdmin) {
+    list.push({
+      title: 'The owner console.',
+      sub: 'As an owner or admin you get the same reading across the team — who is booking, which steps get skipped, the lanes you run and recent activity — plus seats, invites and demo mode.',
+      visual: consoleVisual(),
+    });
+  }
+
+  list.push({
+    title: 'Capture without the window.',
+    sub: '<b>Floating widget</b> in the header opens a small always-on-top remote: the orb, the live transcript, and a chip for every field as it fills, orbiting the remote.',
+    points: [
+      'Drag the remote and the chips follow it.',
+      'Made for capturing while your TMS or softphone has the screen.',
+    ],
+    visual: widgetVisual(),
+  });
+
+  return list;
+}
+
+// ─── Rendering ──────────────────────────────────────────────────────────────
+
+function renderStep() {
   if (!activeOverlay) return;
   const stage = activeOverlay.querySelector('#lf-tut-stage');
-  if (!stage) return;
+  const step = steps[stepIndex];
+  if (!stage || !step) return;
 
-  // Skip button visibility (hidden during dim and controls phases)
-  const skip = activeOverlay.querySelector('#lf-tut-skip');
-  if (skip) skip.style.display = phase === 'dim' || phase === 'controls' ? 'none' : '';
+  const last = stepIndex === steps.length - 1;
+  const points = step.points
+    ? `<ul class="lf-tut-points">${step.points.map((p) => `<li>${p}</li>`).join('')}</ul>`
+    : '';
 
-  // Dim visibility
-  const dim = activeOverlay.querySelector('#lf-tut-dim');
-  if (dim) dim.classList.toggle('is-visible', phase !== 'dim');
+  stage.innerHTML = `
+    <div class="lf-tut-step" data-step="${stepIndex}">
+      <div class="lf-tut-visual">${step.visual || ''}</div>
+      <h2 class="lf-tutorial-title">${step.title}</h2>
+      <p class="lf-tutorial-sub">${step.sub}</p>
+      ${points}
+    </div>
+    <div class="lf-tut-nav">
+      <button type="button" class="lf-tut-btn" id="lf-tut-back" ${stepIndex === 0 ? 'disabled' : ''}>Back</button>
+      <div class="lf-tut-dots" role="presentation">
+        ${steps.map((_, i) => `<span class="lf-tut-dot${i === stepIndex ? ' is-active' : ''}"></span>`).join('')}
+      </div>
+      <button type="button" class="lf-tut-btn is-primary" id="lf-tut-next">
+        ${last ? 'Start dispatching' : 'Next'}
+      </button>
+    </div>`;
 
-  // Stage content per phase
-  switch (phase) {
-    case 'dim':
-      stage.innerHTML = '';
-      break;
-    case 'greeting':
-      stage.innerHTML = renderGreeting();
-      break;
-    case 'intro':
-      stage.innerHTML = renderIntro();
-      break;
-    case 'shortcut':
-      stage.innerHTML = renderShortcut();
-      break;
-    case 'edge':
-      stage.innerHTML = renderEdge();
-      break;
-    case 'controls':
-      stage.innerHTML = renderControls();
-      const done = stage.querySelector('#lf-tut-done');
-      if (done) done.addEventListener('click', closeTutorial);
-      break;
-  }
+  stage.querySelector('#lf-tut-back').addEventListener('click', () => goTo(stepIndex - 1));
+  stage.querySelector('#lf-tut-next').addEventListener('click', () => {
+    if (last) closeTutorial();
+    else goTo(stepIndex + 1);
+  });
 }
 
-export function startTutorial() {
-  if (activeOverlay) {
-    closeTutorial();
-  }
+function goTo(index) {
+  if (index < 0 || index >= steps.length) return;
+  stepIndex = index;
+  renderStep();
+}
 
-  // Inject the arrow-fly keyframes once
-  if (!document.getElementById('lf-tut-keyframes')) {
-    const style = document.createElement('style');
-    style.id = 'lf-tut-keyframes';
-    style.textContent = `@keyframes lf-arrow-fly {
-  0% { opacity: 0; transform: translateX(-8vw) scale(0.9); }
-  15% { opacity: 1; }
-  85% { opacity: 1; }
-  100% { opacity: 0; transform: translateX(42vw) scale(1); }
-}`;
-    document.head.appendChild(style);
-  }
+// ─── Overlay controller ─────────────────────────────────────────────────────
+
+export function startTutorial(options = {}) {
+  if (activeOverlay) closeTutorial();
+
+  steps = buildSteps(options);
+  stepIndex = 0;
+  seenUserId = options.userId || null;
 
   activeOverlay = document.createElement('div');
   activeOverlay.className = 'lf-tutorial';
   activeOverlay.id = 'lf-tut-overlay';
   activeOverlay.innerHTML = `
-    <div class="lf-tutorial-dim" id="lf-tut-dim"></div>
-    <button type="button" class="lf-tutorial-skip" id="lf-tut-skip">Skip tutorial</button>
-    <div class="lf-tutorial-stage" id="lf-tut-stage"></div>
-  `;
+    <div class="lf-tutorial-dim is-visible" id="lf-tut-dim"></div>
+    <button type="button" class="lf-tutorial-skip" id="lf-tut-skip">Skip</button>
+    <div class="lf-tutorial-stage" id="lf-tut-stage"></div>`;
   document.body.appendChild(activeOverlay);
-
-  // Skip button
   activeOverlay.querySelector('#lf-tut-skip').addEventListener('click', closeTutorial);
 
-  // Esc to close
-  escHandler = (e) => {
+  // Esc closes; the arrow keys and Enter page through it without the mouse,
+  // which is how someone re-reading a step will reach for it.
+  keyHandler = (e) => {
     if (e.key === 'Escape') closeTutorial();
+    else if (e.key === 'ArrowRight') goTo(stepIndex + 1);
+    else if (e.key === 'ArrowLeft') goTo(stepIndex - 1);
+    else if (e.key === 'Enter') {
+      if (stepIndex === steps.length - 1) closeTutorial();
+      else goTo(stepIndex + 1);
+    } else return;
+    e.preventDefault();
   };
-  document.addEventListener('keydown', escHandler);
+  document.addEventListener('keydown', keyHandler);
 
-  // Lock body scroll while the tutorial is open
   document.body.style.overflow = 'hidden';
-
-  // Auto-advance through the timeline
-  clearTimers();
-  setPhase('dim');
-  TIMELINE.forEach(({ phase, at }) => {
-    timers.push(setTimeout(() => setPhase(phase), at));
-  });
+  renderStep();
 }
 
 export function closeTutorial() {
-  clearTimers();
-  if (escHandler) {
-    document.removeEventListener('keydown', escHandler);
-    escHandler = null;
+  if (openTimer) {
+    clearTimeout(openTimer);
+    openTimer = null;
+  }
+  if (keyHandler) {
+    document.removeEventListener('keydown', keyHandler);
+    keyHandler = null;
   }
   document.body.style.overflow = '';
   if (activeOverlay) {
     activeOverlay.remove();
     activeOverlay = null;
   }
+  // Dismissed counts as seen however it was dismissed — someone who skips it
+  // has told us they don't want it, and re-showing it next launch is nagging.
+  if (seenUserId) {
+    markTutorialSeen(seenUserId);
+    seenUserId = null;
+  }
 }
 
 export function isTutorialActive() {
   return activeOverlay !== null;
+}
+
+// ─── First-run state ────────────────────────────────────────────────────────
+
+function seenKey(userId) {
+  return `${SEEN_KEY_PREFIX}${userId}`;
+}
+
+export function hasSeenTutorial(userId) {
+  try {
+    return localStorage.getItem(seenKey(userId)) === '1';
+  } catch {
+    // Storage disabled: treat it as seen rather than opening this on every
+    // single sign-in.
+    return true;
+  }
+}
+
+export function markTutorialSeen(userId) {
+  try {
+    localStorage.setItem(seenKey(userId), '1');
+  } catch {
+    // Nothing to do — it will show once more next time, which is survivable.
+  }
+}
+
+/**
+ * Open the walkthrough the first time this user reaches the capture screen.
+ * Safe to call on every mode switch: it no-ops once seen, once open, and
+ * while another open is already pending.
+ */
+export function showTutorialIfUnseen(userId, options = {}) {
+  if (!userId || activeOverlay || openTimer) return;
+  if (hasSeenTutorial(userId)) return;
+  openTimer = setTimeout(() => {
+    openTimer = null;
+    startTutorial({ ...options, userId });
+  }, OPEN_DELAY_MS);
 }
