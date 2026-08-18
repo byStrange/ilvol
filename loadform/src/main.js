@@ -248,8 +248,6 @@ const els = {
   // Device + capture options
   deviceSelect: document.getElementById('device-select'),
   deviceHint: document.getElementById('device-hint'),
-  mixSystemRow: document.getElementById('mix-system-row'),
-  mixSystemCheckbox: document.getElementById('mix-system-checkbox'),
   meterContainer: document.getElementById('meter-container'),
   autoExtractCheckbox: document.getElementById('auto-extract-checkbox'),
   // Extract
@@ -550,6 +548,46 @@ function renderStatus() {
 }
 
 // ─── Device Management ──────────────────────────────────────────────────────
+//
+// One select, and every option in it is a complete capture mode. There used to
+// be a second control — a "Mix System Audio" toggle — next to a select that
+// already listed System Audio as a source, so two controls answered the same
+// question and could contradict each other: picking "System Audio" silently
+// forced the toggle off, and the toggle only appeared for some selections.
+//
+// The mode is encoded in the option's value so that one string carries the
+// whole answer:
+//
+//   "mic:0"          mic only
+//   "mic:0+system"   mic mixed with system audio  ← the default
+//   "system:default" system audio only
+//
+// Only the backend's own device ids appear on the left of the "+", so parsing
+// is a suffix test and nothing else. Mixing is the default because a broker
+// call has two sides and capturing one of them transcribes half a conversation.
+
+const MIX_SUFFIX = '+system';
+
+/** Split a select value into what start_capture_cmd actually takes. */
+function parseCaptureMode(value) {
+  const mixSystemAudio = value.endsWith(MIX_SUFFIX);
+  return {
+    deviceId: mixSystemAudio ? value.slice(0, -MIX_SUFFIX.length) : value,
+    mixSystemAudio,
+  };
+}
+
+/** The inverse, for syncing the select to a capture started elsewhere. */
+function captureModeValue(deviceId, mixSystemAudio) {
+  return mixSystemAudio ? `${deviceId}${MIX_SUFFIX}` : deviceId;
+}
+
+function addOption(group, value, label) {
+  const opt = document.createElement('option');
+  opt.value = value;
+  opt.textContent = label;
+  group.appendChild(opt);
+}
 
 async function loadDevices() {
   try {
@@ -557,46 +595,48 @@ async function loadDevices() {
 
     els.deviceSelect.innerHTML = '';
 
-    // Group: Microphones
-    const micGroup = document.createElement('optgroup');
-    micGroup.label = 'Microphones';
     const mics = devices.filter((d) => d.device_type === 'microphone');
+    // System capture is a Windows-only path in audio_capture.rs. Everywhere
+    // else the backend reports a single `system:unavailable` placeholder, and
+    // offering modes that can only fail is worse than not offering them — the
+    // hint below explains the workaround instead.
+    const systemDev = devices.find((d) => d.id === 'system:default');
+
     if (mics.length === 0) {
+      const group = document.createElement('optgroup');
+      group.label = 'Microphones';
       const opt = document.createElement('option');
       opt.textContent = 'No microphones found';
       opt.disabled = true;
-      micGroup.appendChild(opt);
-    } else {
+      group.appendChild(opt);
+      els.deviceSelect.appendChild(group);
+    } else if (systemDev) {
+      const mixGroup = document.createElement('optgroup');
+      mixGroup.label = 'Both sides of the call';
       mics.forEach((dev) => {
-        const opt = document.createElement('option');
-        opt.value = dev.id;
-        opt.textContent = dev.name;
-        micGroup.appendChild(opt);
+        addOption(mixGroup, captureModeValue(dev.id, true), `${dev.name} + system audio`);
       });
-    }
-    els.deviceSelect.appendChild(micGroup);
+      els.deviceSelect.appendChild(mixGroup);
 
-    // Group: System Audio
-    const sysGroup = document.createElement('optgroup');
-    sysGroup.label = 'System Audio';
-    const sysDevs = devices.filter((d) => d.device_type === 'system');
-    sysDevs.forEach((dev) => {
-      const opt = document.createElement('option');
-      opt.value = dev.id;
-      opt.textContent = dev.name;
-      if (dev.id === 'system:unavailable') {
-        opt.disabled = true;
-      }
-      sysGroup.appendChild(opt);
-    });
-    if (sysDevs.length > 0) {
-      els.deviceSelect.appendChild(sysGroup);
+      const soloGroup = document.createElement('optgroup');
+      soloGroup.label = 'One side only';
+      mics.forEach((dev) => {
+        addOption(soloGroup, dev.id, `${dev.name} only`);
+      });
+      addOption(soloGroup, systemDev.id, 'System audio only');
+      els.deviceSelect.appendChild(soloGroup);
+    } else {
+      const group = document.createElement('optgroup');
+      group.label = 'Microphones';
+      mics.forEach((dev) => addOption(group, dev.id, dev.name));
+      els.deviceSelect.appendChild(group);
     }
 
-    // Select first mic by default
+    // Default to the first mic mixed with system audio, which is the mode that
+    // records a whole broker call rather than half of one.
     if (mics.length > 0) {
-      els.deviceSelect.value = mics[0].id;
-      selectedDeviceId = mics[0].id;
+      els.deviceSelect.value = captureModeValue(mics[0].id, Boolean(systemDev));
+      selectedDeviceId = els.deviceSelect.value;
     }
 
     els.deviceSelect.addEventListener('change', onDeviceChange);
@@ -609,25 +649,25 @@ async function loadDevices() {
 
 function onDeviceChange() {
   selectedDeviceId = els.deviceSelect.value;
-  const dev = devices.find((d) => d.id === selectedDeviceId);
+  const { deviceId, mixSystemAudio } = parseCaptureMode(selectedDeviceId);
+  const dev = devices.find((d) => d.id === deviceId);
 
   if (!dev) return;
 
-  // Show/hide system audio mix option
-  if (dev.device_type === 'microphone') {
-    els.mixSystemRow.classList.remove('hidden');
-    els.deviceHint.textContent = 'Captures your microphone. Enable "Mix System Audio" to also capture RingCentral/Zoom.';
-    els.deviceHint.classList.remove('hidden');
+  if (mixSystemAudio) {
+    els.deviceHint.textContent =
+      'Records you and the broker together — your mic plus anything playing through RingCentral, Zoom, Teams or the browser.';
   } else if (dev.device_type === 'system') {
-    els.mixSystemRow.classList.add('hidden');
-    els.mixSystemCheckbox.checked = false;
-    if (dev.id === 'system:unavailable') {
-      els.deviceHint.textContent = 'System audio requires Windows. On Linux/Mac, use a virtual audio cable (e.g., PulseAudio loopback) and select it as mic.';
-    } else {
-      els.deviceHint.textContent = 'Captures all system audio including RingCentral, Zoom, Teams, browser.';
-    }
-    els.deviceHint.classList.remove('hidden');
+    els.deviceHint.textContent =
+      'Records only what comes out of your speakers. Your own voice will not be in the transcript.';
+  } else if (devices.some((d) => d.id === 'system:default')) {
+    els.deviceHint.textContent =
+      'Records only your microphone. The broker\'s side of the call will not be in the transcript.';
+  } else {
+    els.deviceHint.textContent =
+      'Records your microphone. Capturing the broker\'s side needs Windows — on Linux/Mac, route it through a virtual audio cable (e.g. a PulseAudio loopback) and pick that here.';
   }
+  els.deviceHint.classList.remove('hidden');
 }
 
 // ─── Audio Level Meters (per-source dev visualization) ─────────────────────
@@ -785,9 +825,10 @@ async function startCapture() {
     // Mint a fresh short-lived Deepgram token per capture. This is also the
     // server-side gate where quota will be enforced, so a failure here is a
     // legitimate reason not to start.
-    const mixSystemAudio = els.mixSystemCheckbox.checked;
-    const { token, captureId, capturesRemaining, capturesLimit } =
-      await getDeepgramToken(mixSystemAudio ? 'mixed' : 'mic');
+    const { deviceId, mixSystemAudio } = parseCaptureMode(selectedDeviceId);
+    const { token, captureId, capturesRemaining, capturesLimit } = await getDeepgramToken(
+      mixSystemAudio ? 'mixed' : deviceId.startsWith('system:') ? 'system' : 'mic'
+    );
     currentCaptureId = captureId;
     // The grant response already carries the post-increment count, so the
     // counter can drop immediately without another round trip mid-capture.
@@ -799,7 +840,7 @@ async function startCapture() {
     }
     captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
-      deviceId: selectedDeviceId,
+      deviceId,
       mixSystemAudio,
       deepgramToken: token,
     });
@@ -973,14 +1014,15 @@ function onCaptureError(payload) {
 
 function onCaptureState(payload) {
   if (payload?.running) {
-    // Sync the device/mix controls to reflect what's actually capturing, so
-    // the main UI matches a session started from the widget (and vice versa).
-    if (typeof payload.deviceId === 'string') {
-      selectedDeviceId = payload.deviceId;
-      if (els.deviceSelect) els.deviceSelect.value = payload.deviceId;
-    }
-    if (typeof payload.mixSystemAudio === 'boolean' && els.mixSystemCheckbox) {
-      els.mixSystemCheckbox.checked = payload.mixSystemAudio;
+    // Sync the source select to reflect what's actually capturing, so the main
+    // UI matches a session started from the widget (and vice versa). Device and
+    // mix arrive as two fields but select one option between them, so both are
+    // read before the value is set — a deviceId alone would land on the
+    // mic-only option even when the running capture is mixing.
+    if (typeof payload.deviceId === 'string' && els.deviceSelect) {
+      const value = captureModeValue(payload.deviceId, payload.mixSystemAudio === true);
+      selectedDeviceId = value;
+      els.deviceSelect.value = value;
     }
     enterListeningUI();
   } else {

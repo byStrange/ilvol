@@ -1034,24 +1034,15 @@
               </summary>
               <div class="mt-4 space-y-4">
                 <div>
-                  <label class="block text-xs text-slate-400 mb-1.5 font-medium">Audio Source</label>
+                  <label class="block text-xs text-slate-400 mb-1.5 font-medium">What to capture</label>
+                  <!-- One control, one decision. Every option is a complete
+                       capture mode, so there is no second toggle that can
+                       disagree with what the select says. Built in JS by
+                       loadDevices(); see the value encoding there. -->
                   <select id="device-select" class="lf-select">
                     <option value="" disabled selected>Loading devices...</option>
                   </select>
                   <p id="device-hint" class="text-xs text-slate-500 mt-2 hidden"></p>
-                </div>
-
-                <div id="mix-system-row" class="hidden">
-                  <label class="lf-toggle-row" for="mix-system-checkbox">
-                    <span class="lf-toggle-text">
-                      <span>Mix System Audio<span class="lf-pro-badge">PRO</span></span>
-                      <span class="lf-toggle-sub">Capture mic + system audio together</span>
-                    </span>
-                    <span class="lf-toggle-switch">
-                      <input id="mix-system-checkbox" type="checkbox" />
-                      <span class="lf-toggle-track"><span class="lf-toggle-thumb"></span></span>
-                    </span>
-                  </label>
                 </div>
 
                 <div>

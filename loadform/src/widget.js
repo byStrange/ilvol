@@ -118,6 +118,7 @@ function orbitRadius() {
 
 let isCapturing = false;
 let selectedDeviceId = null;
+let mixSystemAudio = false; // set by pickDevice(); see the note there.
 // Metering: correlates this session's token grant with its end.
 let currentCaptureId = null;
 let captureStartedAt = null;
@@ -514,12 +515,12 @@ async function startCapture() {
   }, CAPTURE_START_TIMEOUT_MS);
   try {
     placeholderEl.textContent = placeholderDefaultText;
-    const { token, captureId } = await getDeepgramToken('mic');
+    const { token, captureId } = await getDeepgramToken(mixSystemAudio ? 'mixed' : 'mic');
     currentCaptureId = captureId;
     captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
       deviceId: selectedDeviceId,
-      mixSystemAudio: false,
+      mixSystemAudio,
       deepgramToken: token,
     });
   } catch (err) {
@@ -608,10 +609,14 @@ function onCaptureError(event) {
 async function pickDevice() {
   try {
     const devices = await tauriInvoke('list_devices');
-    const mic = Array.isArray(devices)
-      ? devices.find((d) => d.device_type === 'microphone') || devices[0]
-      : null;
+    const list = Array.isArray(devices) ? devices : [];
+    const mic = list.find((d) => d.device_type === 'microphone') || list[0] || null;
     selectedDeviceId = mic?.id || null;
+    // The widget has no source picker, so it takes the same default the main
+    // window's select opens on: mic mixed with system audio, which is the only
+    // mode that hears both sides of a broker call. `system:default` is present
+    // only where the backend can actually capture it (Windows).
+    mixSystemAudio = list.some((d) => d.id === 'system:default');
   } catch (err) {
     console.error('Widget list_devices error:', err);
   }
