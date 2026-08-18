@@ -24,6 +24,43 @@ body {
   overflow: hidden;
 }
 
+/* ─── Scrollbars ───────────────────────────────────────────────────────── */
+/*
+ * The widget's own copy of the app's scrollbar treatment (styles.css) —
+ * separate window, separate stylesheet — trimmed for a surface this small:
+ * no track, a hairline slate thumb inside a transparent border, brightening
+ * and thickening under the pointer. Pseudo-elements only, for the reason
+ * spelled out in styles.css.
+ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.32);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(148, 163, 184, 0.5);
+  border-width: 1px;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* ─── Card (the sun — control surface) ──────────────────────────────────── */
 
 .wf-card {
@@ -79,15 +116,6 @@ body {
   font-size: 12px;
   line-height: 1.45;
   padding-right: 2px;
-}
-
-.wf-transcript::-webkit-scrollbar {
-  width: 4px;
-}
-
-.wf-transcript::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.25);
-  border-radius: 4px;
 }
 
 /* Final transcript words render in a faded/disabled slate tone. */

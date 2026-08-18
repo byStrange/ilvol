@@ -23,6 +23,11 @@ jobs:
         run: npm ci
         working-directory: loadform
 
+      - name: Read version
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> $env:GITHUB_OUTPUT
+        working-directory: loadform
+
       - name: Build frontend
         run: npm run build
         working-directory: loadform
@@ -34,5 +39,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: loadform-windows
+          name: loadform-windows-v${{ steps.version.outputs.value }}
           path: loadform/src-tauri/target/release/bundle/nsis/*.exe
