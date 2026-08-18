@@ -167,6 +167,17 @@ grant execute on function public.accept_invite(uuid) to authenticated;
 -- Self-service leave for the caller's own active, non-owner membership.
 -- A dedicated function rather than a raw UPDATE policy branch keeps "leave"
 -- from being reachable as a general-purpose self-edit.
+--
+-- Leaving does not touch `loads`. This is the deliberate mirror image of the
+-- forward-only join rule below: joining an org does not hand it your prior
+-- loads, and leaving does not take the org's loads back out with you. Rows
+-- written while the membership was active keep their org_id and stay readable
+-- by org admins afterwards — the work was done on the org's behalf and its
+-- record belongs to the org, not to whoever happened to type it.
+--
+-- The pairing is what makes org_id mean "written as a member of this org"
+-- rather than "currently belongs to a member of this org", which is the only
+-- reading under which a dashboard stays stable as people come and go.
 
 create or replace function public.leave_organization()
 returns void

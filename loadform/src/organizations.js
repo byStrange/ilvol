@@ -85,7 +85,14 @@ export async function declineInvite(supabase, memberRowId) {
 /** Leave the caller's own active org membership. Goes through the
  * leave_organization() RPC — owners can't leave (no ownership-transfer flow
  * yet), which the function enforces itself rather than relying on the UI to
- * hide the button. */
+ * hide the button.
+ *
+ * Leaving does not detach the caller's loads: rows written while the
+ * membership was active keep their org_id and stay readable by org admins.
+ * That is the mirror of saveLoad's forward-only rule, which never stamps an
+ * org_id onto a load that predates the join. See the note above
+ * leave_organization() in 20260811000000_organizations.sql for why the pair
+ * has to work this way. */
 export async function leaveOrganization(supabase) {
   if (!supabase) return { ok: false };
   const { error } = await supabase.rpc('leave_organization');
