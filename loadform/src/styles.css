@@ -526,7 +526,9 @@ body {
   .lf-app-grid {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
     gap: 1.5rem;
-    height: calc(100vh - 9rem); /* fill viewport minus header/footer */
+    /* Fill the viewport minus what sits outside the grid: the 4.75rem header
+       row and #app's own 3rem bottom padding. */
+    height: calc(100vh - 7.75rem);
   }
 
   .lf-col-capture,
