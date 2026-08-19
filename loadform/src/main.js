@@ -141,7 +141,7 @@ let status = 'idle';
 const STATUS_COPY = {
   idle: {
     title: 'Tap to capture a load',
-    sub: "Read the broker's offer out loud. I'll build the dispatch as you talk.",
+    sub: 'Start it when your broker call does. The load fills in while you talk.',
   },
   // Between the tap and the first word there is a token to mint and a
   // transcription socket to open. Saying so is most of the fix for the
@@ -149,7 +149,7 @@ const STATUS_COPY = {
   // a second and a half is asking to be pressed again.
   connecting: {
     title: 'Starting…',
-    sub: 'Opening the microphone. Give it a second.',
+    sub: 'Opening the audio stream. Give it a second.',
   },
   listening: {
     title: 'Listening…',

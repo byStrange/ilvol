@@ -13,6 +13,15 @@
  * field chips). Every step below points at something the app actually does,
  * using the labels it actually shows.
  *
+ * The copy is written for the live call, because that is the job: the
+ * dispatcher and the broker are talking and LoadForm fills the form
+ * underneath them. An earlier pass told the reader to "read the broker's
+ * offer out loud", which describes dictating a load after the fact — the one
+ * thing this app exists to save you from — and would have had a first-time
+ * dispatcher repeating a call they had just finished. The audio-source step
+ * carries the other modes (one side only, playing a recording back) as the
+ * exceptions they are.
+ *
  * Seen-state is per user id, so a shared dispatch-office machine walks each
  * dispatcher through it once rather than once per computer.
  */
@@ -167,66 +176,67 @@ function widgetVisual() {
 function buildSteps({ includeAdmin = false } = {}) {
   const list = [
     {
-      title: 'This is LoadForm.',
-      sub: 'Read a broker’s offer out loud and walk away with a driver-ready dispatch — captured, filled in and saved before the call ends.',
+      title: 'LoadForm fills the load during the call',
+      sub: 'It listens while you and the broker talk, pulls out pickup, delivery, rate and equipment as they come up, and has the driver message ready by the time you hang up.',
       visual: orbVisual(),
     },
     {
-      title: 'Start with the orb.',
-      sub: 'Tap it and LoadForm starts listening, then read the offer back as the broker gives it to you.',
+      title: 'Tap the orb when the call starts',
+      sub: 'Then run the call the way you always do. You don’t have to repeat anything for LoadForm or play the call back afterwards.',
       points: [
-        '<b>Audio source &amp; options</b> under the orb picks what it hears.',
-        'Your microphone, the system audio from your softphone, or both mixed together.',
+        '<b>Audio source &amp; options</b> under the orb sets what it hears.',
+        'It defaults to your mic plus system audio, so both sides of a RingCentral, Zoom or Teams call reach the transcript.',
+        'Pick one side only when you’re on speakerphone in the room, or playing a recorded call back.',
       ],
       visual: orbVisual(),
     },
     {
-      title: 'The form fills while they talk.',
-      sub: 'Auto-fill is on by default and re-reads the conversation on every pause, so pickup, delivery, rate and equipment land as they are said.',
+      title: 'Fields fill in as the broker talks',
+      sub: 'LoadForm re-reads the conversation on every pause, so most of the load is on screen before the call ends.',
       points: [
-        'Each card carries the model’s confidence; a shaky one is flagged for a second look.',
-        'Every card is an input — correct anything that came out wrong and the message updates.',
+        'Each card shows how sure the model is. A low number means check that one.',
+        'Every card is editable. Fix anything that came out wrong and the message updates with it.',
       ],
       visual: fieldCardsVisual(),
     },
     {
-      title: 'A message your driver can read.',
-      sub: 'The captured load is rendered as plain dispatch text. <b>Copy</b> puts it on the clipboard, ready to paste wherever your drivers actually read.',
+      title: 'Copy the message your driver gets',
+      sub: 'The load is written out as plain dispatch text. <b>Copy</b> puts it on the clipboard for WhatsApp, SMS or email.',
       visual: driverMessageVisual(),
     },
     {
-      title: 'Finishing asks how it went.',
-      sub: 'The load is written to your history as you capture, so <b>Finish &amp; start next load</b> only asks the one thing the transcript can’t tell us — whether you got it.',
+      title: 'Finishing asks how the call ended',
+      sub: 'The load is saved as you capture it, so <b>Finish &amp; start next load</b> only asks the one thing the transcript can’t tell us: did you get it?',
       points: ['Picked the wrong one? Change the outcome later from Load History.'],
       visual: outcomeVisual(),
     },
     {
-      title: 'Every load you captured, kept.',
-      sub: '<b>History</b> in the header lists what you’ve booked, lost and are still working. Open one to re-read the dispatch or hand it to a driver again.',
+      title: 'Find any load again in History',
+      sub: '<b>History</b> lists what you booked, what you lost and what you’re still working. Open one to re-read the dispatch or send it to a driver again.',
       visual: historyVisual(),
     },
     {
-      title: 'How you’re running calls.',
-      sub: '<b>My stats</b> scores your own calls from your own transcripts: which steps you covered, with the quote that earned each mark, your outcome split and why loads were lost.',
-      points: ['It measures what was covered on the call, never how you sounded.'],
+      title: 'See how your calls are going',
+      sub: '<b>My stats</b> scores your own calls from your own transcripts: which steps you covered, how your loads ended and why the lost ones got away.',
+      points: ['It reads what was covered on the call, never how you sounded.'],
       visual: scorecardVisual(),
     },
   ];
 
   if (includeAdmin) {
     list.push({
-      title: 'The owner console.',
-      sub: 'As an owner or admin you get the same reading across the team — who is booking, which steps get skipped, the lanes you run and recent activity — plus seats, invites and demo mode.',
+      title: 'Run the team from the owner console',
+      sub: 'Owners and admins get the same reading across every dispatcher: who is booking, which steps get skipped and what the team is running. Seats, invites and demo mode live here too.',
       visual: consoleVisual(),
     });
   }
 
   list.push({
-    title: 'Capture without the window.',
-    sub: '<b>Floating widget</b> in the header opens a small always-on-top remote: the orb, the live transcript, and a chip for every field as it fills, orbiting the remote.',
+    title: 'Keep capturing in a smaller window',
+    sub: '<b>Floating widget</b> opens an always-on-top remote: the orb, the live transcript and a chip for every field as it fills.',
     points: [
-      'Drag the remote and the chips follow it.',
-      'Made for capturing while your TMS or softphone has the screen.',
+      'Drag the remote anywhere and the chips follow it.',
+      'Use it when your TMS or softphone needs the screen.',
     ],
     visual: widgetVisual(),
   });
