@@ -15,6 +15,12 @@ const SAMPLE_RATE: u32 = 16000;
 const CHANNELS: u16 = 1;
 const DEEPGRAM_URL: &str = "wss://api.deepgram.com/v1/listen";
 
+/// Deepgram closes a live stream that has gone this long without receiving
+/// audio, so the writer below breaks its silence before the deadline.
+const DEEPGRAM_AUDIO_TIMEOUT_SECS: u64 = 10;
+const KEEPALIVE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(DEEPGRAM_AUDIO_TIMEOUT_SECS / 2);
+
 // ─── Audio Device Info ──────────────────────────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -281,10 +287,37 @@ async fn capture_and_stream(
     let (audio_tx, mut audio_rx) = mpsc::channel::<Vec<u8>>(256);
 
     // ─── Websocket Writer Task ──────────────────────────────────────────────
+    //
+    // The idle branch is not an optimisation, it is what keeps the session
+    // alive. Deepgram drops a stream that has sent no audio for ten seconds,
+    // and there is one capture path that legitimately sends nothing for
+    // minutes at a time: WASAPI loopback hands back no packets at all while
+    // the render endpoint is idle, so a system-audio capture started before
+    // the call connects — or one that sits through a pause in it — was posting
+    // literally zero bytes. The socket closed underneath it and every word
+    // spoken afterwards went nowhere. A KeepAlive frame holds the session open
+    // without billing silence as audio.
+    let writer_stop = stop_flag.clone();
     let writer = tokio::spawn(async move {
-        while let Some(chunk) = audio_rx.recv().await {
-            if ws_write.send(WsMessage::Binary(chunk.into())).await.is_err() {
-                break;
+        loop {
+            match tokio::time::timeout(KEEPALIVE_INTERVAL, audio_rx.recv()).await {
+                // Audio to forward.
+                Ok(Some(chunk)) => {
+                    if ws_write.send(WsMessage::Binary(chunk.into())).await.is_err() {
+                        writer_stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
+                // `audio_tx` dropped: the capture is unwinding, so close cleanly.
+                Ok(None) => break,
+                // Nothing to send for half the timeout — hold the session open.
+                Err(_) => {
+                    let keep_alive = WsMessage::Text(r#"{"type": "KeepAlive"}"#.to_string());
+                    if ws_write.send(keep_alive).await.is_err() {
+                        writer_stop.store(true, Ordering::Relaxed);
+                        return;
+                    }
+                }
             }
         }
         let close_msg = WsMessage::Text(r#"{"type": "CloseStream"}"#.to_string());
@@ -292,9 +325,19 @@ async fn capture_and_stream(
     });
 
     // ─── Websocket Reader + Tauri Emitter Task ──────────────────────────────
+    //
+    // Reaching the end of `ws_read` while the capture is still meant to be
+    // running means the transcription is over even though the recording is
+    // not. That used to be invisible in both directions: nothing told the
+    // capture loop below to unwind, so `on_exit` never ran and the orb sat on
+    // "Listening…" for the rest of the call, and nothing told the frontend
+    // why. Setting the stop flag here routes it through the path the UI
+    // already has for a capture that dies on its own.
     let app_clone = app_handle.clone();
+    let reader_stop = stop_flag.clone();
     let reader = tokio::spawn(async move {
         let mut accumulated = String::new();
+        let mut close_reason: Option<String> = None;
 
         while let Some(msg) = ws_read.next().await {
             match msg {
@@ -328,10 +371,39 @@ async fn capture_and_stream(
                         }
                     }
                 }
-                Ok(WsMessage::Close(_)) => break,
-                Err(_) => break,
+                Ok(WsMessage::Close(frame)) => {
+                    close_reason = frame.and_then(|f| {
+                        let reason = f.reason.trim().to_string();
+                        if reason.is_empty() {
+                            None
+                        } else {
+                            Some(format!("{} ({})", reason, f.code))
+                        }
+                    });
+                    break;
+                }
+                Err(e) => {
+                    close_reason = Some(e.to_string());
+                    break;
+                }
                 _ => {}
             }
+        }
+
+        // The expected end: the capture stopped, the writer sent CloseStream,
+        // Deepgram flushed and hung up. Only an end that arrives while the
+        // capture still thinks it is live is worth interrupting anyone over.
+        if !reader_stop.load(Ordering::Relaxed) {
+            reader_stop.store(true, Ordering::Relaxed);
+            let _ = app_clone.emit(
+                "capture:error",
+                format!(
+                    "transcription stream closed mid-capture{}",
+                    close_reason
+                        .map(|r| format!(" — {}", r))
+                        .unwrap_or_default()
+                ),
+            );
         }
 
         accumulated

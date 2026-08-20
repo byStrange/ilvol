@@ -298,8 +298,19 @@ body {
 
 /* ─── Transcript (word-in animation) ────────────────────────────────────── */
 
+/*
+ * renderTranscript() has always pinned this box to its own scrollHeight after
+ * every chunk, but nothing here ever made it a scroll container: with no cap
+ * and the default `overflow: visible` it just grew for the length of the call,
+ * pushing the audio-source panel down and running off the bottom of a short
+ * window. The cap is in vh so a long call costs the same share of the screen
+ * everywhere, and the auto-scroll now does what it was written to do.
+ */
 .lf-transcript {
   min-height: 92px;
+  max-height: 30vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   width: 100%;
   max-width: 28rem;
   border-radius: 1rem;
@@ -316,6 +327,9 @@ body {
   font-size: 0.94rem;
   line-height: 1.7;
   color: rgba(248, 250, 252, 0.85);
+  /* Speech-to-text emits the odd unbroken run — a spelled-out reference number,
+     a run-together address — that is wider than a 28rem box on its own. */
+  overflow-wrap: anywhere;
 }
 .lf-transcript-cursor {
   display: inline-block;
@@ -506,6 +520,20 @@ body {
   gap: 2rem;
 }
 
+.lf-col-capture {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding-top: 1.5rem;
+}
+.lf-col-fields {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 /*
  * Two columns as soon as two columns fit — which used to mean 1024px, a
  * threshold the app's own default 800×600 window sat below. Everyone opening
@@ -521,6 +549,12 @@ body {
  * that outgrows it; a webview too old to know the keyword drops this
  * declaration and keeps the plain `center` above, which is the current
  * behaviour rather than a broken one.
+ *
+ * The two base rules have to sit *above* this block for that to hold. They
+ * used to follow it, and since a media query adds no specificity their plain
+ * `center` won on source order — so an overflowing column centred itself and
+ * put its first field cards above the scroll origin, where nothing could
+ * scroll back up to them.
  */
 @media (min-width: 768px) {
   .lf-app-grid {
@@ -543,19 +577,6 @@ body {
   .lf-app-grid {
     gap: 3rem;
   }
-}
-.lf-col-capture {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding-top: 1.5rem;
-}
-.lf-col-fields {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
 }
 /*
  * Sized against the column it sits in, not the viewport. The old 640px media
