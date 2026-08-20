@@ -8,9 +8,18 @@
  *
  * ⚠️ The duration is CLIENT-REPORTED and therefore untrusted. It is analytics
  * only: it must never gate access or compute a charge, because a user can send
- * whatever they like. Enforcement rides on load_extracted, which is
- * server-observed. For real Deepgram spend, reconcile against Deepgram's own
- * usage API.
+ * whatever they like. Quota is spent in deepgram-token, at mint time, on a
+ * server-observed capture_started row. For real Deepgram spend, reconcile
+ * against Deepgram's own usage API.
+ *
+ * Calling this is nonetheless what lets an abandoned capture be refunded
+ * (20260820000000): the row it writes is the second timestamp the trigger
+ * needs to see that a session started and stopped seconds apart having
+ * extracted nothing. Note which number that reads — `created_at`, set by
+ * Postgres on both rows, not the `audio_seconds` in this body. A client that
+ * streams for ten minutes and reports one second is billed for the session it
+ * actually held. A session whose end is never reported at all simply keeps its
+ * load; there is no way to tell an abort from a crash from silence.
  */
 
 import { json, requireUser, serveJson } from '../_shared/auth.ts';

@@ -11,6 +11,7 @@
     "test:js": "node --experimental-vm-modules src/templates.test.js && node src/loads.test.js && node src/organizations.test.js",
     "test:rs": "cd src-tauri && cargo test",
     "test:deno": "deno test --allow-net supabase/functions/_shared/rubric.test.ts",
+    "test:sql": "psql \"${DATABASE_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres}\" -v ON_ERROR_STOP=1 -f supabase/tests/void_aborted_captures.test.sql",
     "test": "npm run test:js && npm run test:deno && npm run test:rs"
   },
   "dependencies": {

@@ -216,6 +216,7 @@ function setListening(listening) {
   stopBtn.disabled = !listening;
   micBtn.setAttribute('aria-label', listening ? 'Listening…' : 'Start listening');
   if (!listening) {
+    reportSessionEnded();
     interimText = '';
     renderTranscript();
   }
@@ -552,13 +553,21 @@ async function stopCapture() {
   } catch (err) {
     console.error('Widget stop_capture error:', err);
   }
+  // Reported from setListening(false), the one exit every session goes through.
+}
 
-  if (currentCaptureId && captureStartedAt) {
-    reportCaptureEnded(
-      currentCaptureId,
-      Math.round((Date.now() - captureStartedAt) / 1000),
-    );
-  }
+/**
+ * Report that a capture session is over. Mirrors the main window: a session
+ * that ends by itself never reaches stopCapture, and an unreported end is an
+ * aborted session that keeps the load it never produced (20260820000000).
+ * Reaching this twice is harmless — usage-report is keyed per capture.
+ */
+function reportSessionEnded() {
+  if (!currentCaptureId || !captureStartedAt) return;
+  reportCaptureEnded(
+    currentCaptureId,
+    Math.round((Date.now() - captureStartedAt) / 1000),
+  );
   captureStartedAt = null;
 }
 

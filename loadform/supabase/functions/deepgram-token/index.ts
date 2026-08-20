@@ -33,6 +33,12 @@ Deno.serve(
     // The chokepoint: no token means no transcription and no Deepgram spend,
     // and it cannot be bypassed client-side. Checked before the grant call so
     // an over-quota user costs us nothing at all.
+    //
+    // Counting here means the cap is spent on the press, before there is any
+    // audio to justify it. That is the only place it *can* be spent — the
+    // stream never touches a server we own — so the correction happens after
+    // the fact instead: a session that stops within seconds having extracted
+    // nothing is refunded by the rollup trigger (20260820000000).
     const quota = await checkQuota(user.id, 'capture');
     if (!quota.allowed) {
       return json(quotaExceededBody(quota), 402);

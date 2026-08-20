@@ -872,14 +872,31 @@ async function stopCapture() {
   } catch (err) {
     console.error('Error stopping capture:', err);
   }
+  // The end is reported from exitListeningUI, which this reaches by way of the
+  // capture:state Rust emits on the way out.
+}
 
-  // Report duration before clearing, so we learn actual minutes-per-load.
-  if (currentCaptureId && captureStartedAt) {
-    reportCaptureEnded(
-      currentCaptureId,
-      Math.round((Date.now() - captureStartedAt) / 1000),
-    );
-  }
+/**
+ * Report that a capture session is over.
+ *
+ * Called from the one place every session passes through on its way out, not
+ * from stopCapture, because a session that dies on its own — a dropped
+ * transcription socket, a mic pulled mid-call — never goes near stopCapture and
+ * used to end without a word to the server. That cost more than a gap in the
+ * minutes-per-load numbers once 20260820000000 landed: an aborted session is
+ * only refunded its quota when the server is told it ended, so a capture that
+ * died in its first few seconds silently kept the load it never produced.
+ *
+ * Safe to reach twice. usage-report keys on `capture_ended:<capture_id>`, which
+ * is what already lets the widget and the main window both react to the same
+ * capture:state without double-counting the session.
+ */
+function reportSessionEnded() {
+  if (!currentCaptureId || !captureStartedAt) return;
+  reportCaptureEnded(
+    currentCaptureId,
+    Math.round((Date.now() - captureStartedAt) / 1000),
+  );
   captureStartedAt = null;
 }
 
@@ -917,6 +934,7 @@ function exitListeningUI() {
   // A start that ended in a stop rather than a listen — Rust refusing the
   // device, say. Whatever happened, nothing is pending any more.
   endCaptureStart();
+  reportSessionEnded();
   isCapturing = false;
   els.meterContainer.classList.add('hidden');
   resetMeters();
