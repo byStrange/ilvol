@@ -44,6 +44,15 @@ import {
 } from './loads.js';
 import { startTutorial, showTutorialIfUnseen } from './tutorial.js';
 import {
+  buildCaptureModes,
+  defaultCaptureValue,
+  captureWarning,
+  captureModeValue,
+  captureSourceLabel,
+  listMicrophones,
+  parseCaptureMode,
+} from './audio-sources.js';
+import {
   demoMembers,
   demoOrgLoads,
   demoRecentLoads,
@@ -246,7 +255,11 @@ const els = {
   liveTranscript: document.getElementById('live-transcript'),
   transcriptCursor: document.getElementById('transcript-cursor'),
   // Device + capture options
-  deviceSelect: document.getElementById('device-select'),
+  sourceCards: document.getElementById('source-cards'),
+  deviceWarning: document.getElementById('device-warning'),
+  deviceRefresh: document.getElementById('device-refresh'),
+  micPicker: document.getElementById('mic-picker'),
+  micChips: document.getElementById('mic-chips'),
   deviceHint: document.getElementById('device-hint'),
   meterContainer: document.getElementById('meter-container'),
   autoExtractCheckbox: document.getElementById('auto-extract-checkbox'),
@@ -549,125 +562,237 @@ function renderStatus() {
 
 // ─── Device Management ──────────────────────────────────────────────────────
 //
-// One select, and every option in it is a complete capture mode. There used to
-// be a second control — a "Mix System Audio" toggle — next to a select that
-// already listed System Audio as a source, so two controls answered the same
-// question and could contradict each other: picking "System Audio" silently
-// forced the toggle off, and the toggle only appeared for some selections.
+// One control, one decision: a card per capture mode, and every card is a
+// complete answer. There used to be a second control — a "Mix System Audio"
+// toggle — next to a select that already listed System Audio as a source, so
+// two controls answered the same question and could contradict each other.
 //
-// The mode is encoded in the option's value so that one string carries the
-// whole answer:
+// The picker is cards rather than a <select> because the choice is not a
+// setting, it is the shape of the recording: "both sides", "just me", "just
+// what I hear" each need a sentence to be understood, and a dropdown shows one
+// line at a time with the alternatives hidden behind a click. Cards show all
+// three at once, including the ones this machine cannot run — greyed out, with
+// the reason on them. That last part is the point: a PC with no microphone
+// used to get a picker containing one disabled "No microphones found" line and
+// no way to record at all, even though system audio was sitting right there in
+// the device list, perfectly able to transcribe the broker.
 //
-//   "mic:0"          mic only
-//   "mic:0+system"   mic mixed with system audio  ← the default
-//   "system:default" system audio only
-//
-// Only the backend's own device ids appear on the left of the "+", so parsing
-// is a suffix test and nothing else. Mixing is the default because a broker
-// call has two sides and capturing one of them transcribes half a conversation.
+// Which modes exist and which are reachable is decided in audio-sources.js —
+// pure, tested, and shared with the widget. Everything below is rendering.
 
-const MIX_SUFFIX = '+system';
+let selectedMicId = null; // which mic the mic-bearing modes use
+let devicesLoading = true;
 
-/** Split a select value into what start_capture_cmd actually takes. */
-function parseCaptureMode(value) {
-  const mixSystemAudio = value.endsWith(MIX_SUFFIX);
-  return {
-    deviceId: mixSystemAudio ? value.slice(0, -MIX_SUFFIX.length) : value,
-    mixSystemAudio,
-  };
+const SOURCE_ICONS = {
+  both: '<path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />',
+  mic: '<path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />',
+  system:
+    '<path stroke-linecap="round" stroke-linejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />',
+};
+
+function sourceIcon(modeId) {
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">${
+    SOURCE_ICONS[modeId] || SOURCE_ICONS.mic
+  }</svg>`;
 }
 
-/** The inverse, for syncing the select to a capture started elsewhere. */
-function captureModeValue(deviceId, mixSystemAudio) {
-  return mixSystemAudio ? `${deviceId}${MIX_SUFFIX}` : deviceId;
-}
+/**
+ * Draw the picker for the devices we last heard about.
+ *
+ * Called on load, on Refresh, when the mic changes, and whenever a capture
+ * starts or stops — the cards lock while a recording is live, because the
+ * source is fixed for the length of a session and a card that looks clickable
+ * but changes nothing mid-call is a lie.
+ */
+function renderSourcePicker() {
+  const container = els.sourceCards;
+  if (!container) return;
 
-function addOption(group, value, label) {
-  const opt = document.createElement('option');
-  opt.value = value;
-  opt.textContent = label;
-  group.appendChild(opt);
-}
+  els.deviceRefresh.disabled = isCapturing;
 
-async function loadDevices() {
-  try {
-    devices = await tauriInvoke('list_devices');
-
-    els.deviceSelect.innerHTML = '';
-
-    const mics = devices.filter((d) => d.device_type === 'microphone');
-    // System capture is a Windows-only path in audio_capture.rs. Everywhere
-    // else the backend reports a single `system:unavailable` placeholder, and
-    // offering modes that can only fail is worse than not offering them — the
-    // hint below explains the workaround instead.
-    const systemDev = devices.find((d) => d.id === 'system:default');
-
-    if (mics.length === 0) {
-      const group = document.createElement('optgroup');
-      group.label = 'Microphones';
-      const opt = document.createElement('option');
-      opt.textContent = 'No microphones found';
-      opt.disabled = true;
-      group.appendChild(opt);
-      els.deviceSelect.appendChild(group);
-    } else if (systemDev) {
-      const mixGroup = document.createElement('optgroup');
-      mixGroup.label = 'Both sides of the call';
-      mics.forEach((dev) => {
-        addOption(mixGroup, captureModeValue(dev.id, true), `${dev.name} + system audio`);
-      });
-      els.deviceSelect.appendChild(mixGroup);
-
-      const soloGroup = document.createElement('optgroup');
-      soloGroup.label = 'One side only';
-      mics.forEach((dev) => {
-        addOption(soloGroup, dev.id, `${dev.name} only`);
-      });
-      addOption(soloGroup, systemDev.id, 'System audio only');
-      els.deviceSelect.appendChild(soloGroup);
-    } else {
-      const group = document.createElement('optgroup');
-      group.label = 'Microphones';
-      mics.forEach((dev) => addOption(group, dev.id, dev.name));
-      els.deviceSelect.appendChild(group);
-    }
-
-    // Default to the first mic mixed with system audio, which is the mode that
-    // records a whole broker call rather than half of one.
-    if (mics.length > 0) {
-      els.deviceSelect.value = captureModeValue(mics[0].id, Boolean(systemDev));
-      selectedDeviceId = els.deviceSelect.value;
-    }
-
-    els.deviceSelect.addEventListener('change', onDeviceChange);
-    onDeviceChange();
-  } catch (err) {
-    console.error('Failed to load devices:', err);
-    els.deviceSelect.innerHTML = '<option disabled>Failed to load devices</option>';
+  if (devicesLoading) {
+    container.innerHTML = '<p class="lf-source-loading">Looking for audio devices…</p>';
+    return;
   }
+
+  const modes = buildCaptureModes(devices, selectedMicId);
+  container.innerHTML = '';
+
+  modes.forEach((mode) => {
+    const selected = mode.available && mode.value === selectedDeviceId;
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'lf-source-card';
+    card.dataset.value = mode.value || '';
+    card.dataset.mode = mode.id;
+    card.setAttribute('role', 'radio');
+    card.setAttribute('aria-checked', String(selected));
+    card.classList.toggle('is-selected', selected);
+    card.classList.toggle('is-disabled', !mode.available);
+    // A locked card is still readable and still shows what is recording; it
+    // just cannot be changed until the capture ends.
+    card.disabled = !mode.available || isCapturing;
+    // Roving tabindex: the group is one stop, arrows move within it.
+    card.tabIndex = selected ? 0 : -1;
+
+    card.innerHTML = `
+      <span class="lf-source-icon">${sourceIcon(mode.id)}</span>
+      <span class="lf-source-body">
+        <span class="lf-source-title">
+          ${escapeHtml(mode.title)}
+          ${mode.recommended ? '<span class="lf-source-badge">Recommended</span>' : ''}
+        </span>
+        <span class="lf-source-sub">${escapeHtml(
+          mode.available ? mode.subtitle : mode.reason,
+        )}</span>
+      </span>
+      <span class="lf-source-mark" aria-hidden="true"></span>
+    `;
+
+    if (mode.available) {
+      card.addEventListener('click', () => selectCaptureMode(mode.value));
+    }
+    container.appendChild(card);
+  });
+
+  renderMicPicker(modes);
+  renderDeviceWarning();
+  renderDeviceHint(modes);
 }
 
-function onDeviceChange() {
-  selectedDeviceId = els.deviceSelect.value;
-  const { deviceId, mixSystemAudio } = parseCaptureMode(selectedDeviceId);
-  const dev = devices.find((d) => d.id === deviceId);
+/**
+ * The second-order question, asked only when it exists: *which* microphone.
+ *
+ * One mic is the common case and needs no control — the card already names it.
+ * Two or more get a chip row, which stays out of the way of the decision that
+ * actually matters above it.
+ */
+function renderMicPicker(modes) {
+  const mics = listMicrophones(devices);
+  const usesMic = modes.some((m) => m.id !== 'system' && m.value === selectedDeviceId);
+  const show = mics.length > 1 && usesMic;
 
-  if (!dev) return;
+  els.micPicker.classList.toggle('hidden', !show);
+  if (!show) return;
 
-  if (mixSystemAudio) {
-    els.deviceHint.textContent =
-      'Records you and the broker together — your mic plus anything playing through RingCentral, Zoom, Teams or the browser.';
-  } else if (dev.device_type === 'system') {
-    els.deviceHint.textContent =
-      'Records only what comes out of your speakers. Your own voice will not be in the transcript.';
-  } else if (devices.some((d) => d.id === 'system:default')) {
-    els.deviceHint.textContent =
-      'Records only your microphone. The broker\'s side of the call will not be in the transcript.';
-  } else {
-    els.deviceHint.textContent =
-      'Records your microphone. Capturing the broker\'s side needs Windows — on Linux/Mac, route it through a virtual audio cable (e.g. a PulseAudio loopback) and pick that here.';
+  const activeMic = parseCaptureMode(selectedDeviceId).deviceId;
+  els.micChips.innerHTML = '';
+  mics.forEach((mic) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'lf-mic-chip';
+    chip.textContent = mic.name;
+    chip.title = mic.name;
+    chip.classList.toggle('is-selected', mic.id === activeMic);
+    chip.setAttribute('aria-pressed', String(mic.id === activeMic));
+    chip.disabled = isCapturing;
+    chip.addEventListener('click', () => selectMicrophone(mic.id));
+    els.micChips.appendChild(chip);
+  });
+}
+
+/** One line naming what this machine cannot do, above the cards. */
+function renderDeviceWarning() {
+  const warning = captureWarning(devices);
+  els.deviceWarning.textContent = warning || '';
+  els.deviceWarning.classList.toggle('hidden', !warning);
+  // A machine with nothing to record at all is a harder failure than a machine
+  // missing one side of the call, and reads differently.
+  els.deviceWarning.classList.toggle(
+    'is-critical',
+    Boolean(warning) && !defaultCaptureValue(devices),
+  );
+}
+
+/** What the selected mode will and will not end up in the transcript. */
+function renderDeviceHint(modes) {
+  const mode = modes.find((m) => m.available && m.value === selectedDeviceId);
+  if (!mode) {
+    els.deviceHint.classList.add('hidden');
+    return;
   }
+  els.deviceHint.textContent = mode.detail;
   els.deviceHint.classList.remove('hidden');
+}
+
+/** Pick a capture mode. Ignored mid-capture: the source is fixed per session. */
+function selectCaptureMode(value) {
+  if (!value || isCapturing) return;
+  selectedDeviceId = value;
+  const { deviceId } = parseCaptureMode(value);
+  if (deviceId.startsWith('mic:')) selectedMicId = deviceId;
+  renderSourcePicker();
+}
+
+/** Swap which mic the current mode records, keeping the mode itself. */
+function selectMicrophone(micId) {
+  if (isCapturing) return;
+  selectedMicId = micId;
+  const { mixSystemAudio } = parseCaptureMode(selectedDeviceId);
+  selectedDeviceId = captureModeValue(micId, mixSystemAudio);
+  renderSourcePicker();
+}
+
+/**
+ * Arrow keys move between cards, which is what `role="radio"` promises.
+ * Unavailable cards are skipped — they are there to be read, not chosen.
+ */
+function onSourceCardsKeydown(e) {
+  const keys = ['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'];
+  if (!keys.includes(e.key)) return;
+  const cards = [...els.sourceCards.querySelectorAll('.lf-source-card:not(.is-disabled)')];
+  if (cards.length < 2) return;
+  e.preventDefault();
+  const current = cards.findIndex((c) => c.dataset.value === selectedDeviceId);
+  const step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1;
+  const next = cards[(Math.max(current, 0) + step + cards.length) % cards.length];
+  selectCaptureMode(next.dataset.value);
+  const focus = els.sourceCards.querySelector(`.lf-source-card[data-value="${next.dataset.value}"]`);
+  if (focus) focus.focus();
+}
+
+/**
+ * Ask Rust what this machine has, then pick the best mode it can run.
+ *
+ * `keepSelection` holds a still-valid choice across a Refresh, so plugging a
+ * headset in doesn't silently move the recording to a different source.
+ */
+async function loadDevices({ keepSelection = false } = {}) {
+  try {
+    devicesLoading = true;
+    renderSourcePicker();
+    devices = await tauriInvoke('list_devices');
+    devicesLoading = false;
+
+    const modes = buildCaptureModes(devices, selectedMicId);
+    const stillValid =
+      keepSelection && modes.some((m) => m.available && m.value === selectedDeviceId);
+    if (!stillValid) {
+      // Falls to system audio on a mic-less PC rather than to nothing at all.
+      selectedDeviceId = defaultCaptureValue(devices, selectedMicId) || '';
+      const { deviceId } = parseCaptureMode(selectedDeviceId);
+      selectedMicId = deviceId.startsWith('mic:') ? deviceId : null;
+    }
+    renderSourcePicker();
+  } catch (err) {
+    devicesLoading = false;
+    console.error('Failed to load devices:', err);
+    els.sourceCards.innerHTML =
+      '<p class="lf-source-loading">Could not read this PC\'s audio devices. Press Refresh to try again.</p>';
+    els.deviceHint.classList.add('hidden');
+    els.deviceWarning.classList.add('hidden');
+    els.micPicker.classList.add('hidden');
+  }
+}
+
+function initSourcePicker() {
+  els.sourceCards.addEventListener('keydown', onSourceCardsKeydown);
+  // Mics get plugged in after the app is already open, and on Windows a headset
+  // that arrives late is the single most likely reason the picker is wrong.
+  els.deviceRefresh.addEventListener('click', () => {
+    if (isCapturing) return;
+    loadDevices({ keepSelection: true });
+  });
 }
 
 // ─── Audio Level Meters (per-source dev visualization) ─────────────────────
@@ -804,7 +929,13 @@ async function toggleCapture() {
 
 async function startCapture() {
   if (!selectedDeviceId) {
-    alert('Please select an audio device first.');
+    // Nothing is selected only when nothing is selectable, so say what is
+    // missing — "select an audio device first" is unhelpful advice to give
+    // someone whose PC has no audio device to select.
+    alert(
+      captureWarning(devices) ||
+        'No audio source is available yet. Press Refresh devices and try again.',
+    );
     return;
   }
   // Starting a new capture from `done` resets the form first.
@@ -827,7 +958,7 @@ async function startCapture() {
     // legitimate reason not to start.
     const { deviceId, mixSystemAudio } = parseCaptureMode(selectedDeviceId);
     const { token, captureId, capturesRemaining, capturesLimit } = await getDeepgramToken(
-      mixSystemAudio ? 'mixed' : deviceId.startsWith('system:') ? 'system' : 'mic'
+      captureSourceLabel(selectedDeviceId),
     );
     currentCaptureId = captureId;
     // The grant response already carries the post-increment count, so the
@@ -928,6 +1059,9 @@ function enterListeningUI() {
   setStatus('listening');
   resetMeters();
   els.meterContainer.classList.remove('hidden');
+  // Locks the source picker: what is being recorded is decided for the length
+  // of the session, and cards that still take clicks would suggest otherwise.
+  renderSourcePicker();
 }
 
 function exitListeningUI() {
@@ -938,6 +1072,7 @@ function exitListeningUI() {
   isCapturing = false;
   els.meterContainer.classList.add('hidden');
   resetMeters();
+  renderSourcePicker(); // the source is choosable again
 
   // Show manual extract trigger; if fields already exist, transition to done.
   els.extractSection.classList.remove('hidden');
@@ -1032,15 +1167,14 @@ function onCaptureError(payload) {
 
 function onCaptureState(payload) {
   if (payload?.running) {
-    // Sync the source select to reflect what's actually capturing, so the main
-    // UI matches a session started from the widget (and vice versa). Device and
-    // mix arrive as two fields but select one option between them, so both are
-    // read before the value is set — a deviceId alone would land on the
-    // mic-only option even when the running capture is mixing.
-    if (typeof payload.deviceId === 'string' && els.deviceSelect) {
-      const value = captureModeValue(payload.deviceId, payload.mixSystemAudio === true);
-      selectedDeviceId = value;
-      els.deviceSelect.value = value;
+    // Sync the picker to reflect what's actually capturing, so the main UI
+    // matches a session started from the widget (and vice versa). Device and
+    // mix arrive as two fields but pick one card between them, so both are read
+    // before the value is set — a deviceId alone would land on the mic-only
+    // card even when the running capture is mixing.
+    if (typeof payload.deviceId === 'string') {
+      selectedDeviceId = captureModeValue(payload.deviceId, payload.mixSystemAudio === true);
+      if (payload.deviceId.startsWith('mic:')) selectedMicId = payload.deviceId;
     }
     enterListeningUI();
   } else {
@@ -3787,6 +3921,7 @@ async function handleLogout() {
 window.addEventListener('DOMContentLoaded', () => {
   initAuth();
 
+  initSourcePicker();
   loadDevices();
 
   // Render empty placeholder field cards so the right column is populated

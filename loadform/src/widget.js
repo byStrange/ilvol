@@ -19,6 +19,13 @@
  */
 
 import { getDeepgramToken, reportCaptureEnded } from './api.js';
+import {
+  defaultCaptureValue,
+  captureWarning,
+  captureSourceLabel,
+  captureModeValue,
+  parseCaptureMode,
+} from './audio-sources.js';
 
 // ─── Tauri helpers ────────────────────────────────────────────────────────
 
@@ -119,6 +126,8 @@ function orbitRadius() {
 let isCapturing = false;
 let selectedDeviceId = null;
 let mixSystemAudio = false; // set by pickDevice(); see the note there.
+// Why this PC can't record, when it can't. Shown on the placeholder line.
+let deviceWarning = null;
 // Metering: correlates this session's token grant with its end.
 let currentCaptureId = null;
 let captureStartedAt = null;
@@ -502,6 +511,15 @@ async function startCapture() {
   if (isCapturing || captureStarting) return;
 
   if (!selectedDeviceId) await pickDevice();
+  if (!selectedDeviceId) {
+    // Nothing on this PC can be recorded. The widget has no dialogs, so the
+    // placeholder line is where it has to be said — silence here would leave
+    // someone tapping a mic button that does nothing forever.
+    placeholderEl.textContent =
+      deviceWarning || 'No microphone or system audio found on this PC.';
+    placeholderEl.style.display = '';
+    return;
+  }
 
   captureStarting = true;
   micBtn.disabled = true;
@@ -516,7 +534,9 @@ async function startCapture() {
   }, CAPTURE_START_TIMEOUT_MS);
   try {
     placeholderEl.textContent = placeholderDefaultText;
-    const { token, captureId } = await getDeepgramToken(mixSystemAudio ? 'mixed' : 'mic');
+    const { token, captureId } = await getDeepgramToken(
+      captureSourceLabel(captureModeValue(selectedDeviceId, mixSystemAudio)),
+    );
     currentCaptureId = captureId;
     captureStartedAt = Date.now();
     await tauriInvoke('start_capture_cmd', {
@@ -619,13 +639,21 @@ async function pickDevice() {
   try {
     const devices = await tauriInvoke('list_devices');
     const list = Array.isArray(devices) ? devices : [];
-    const mic = list.find((d) => d.device_type === 'microphone') || list[0] || null;
-    selectedDeviceId = mic?.id || null;
     // The widget has no source picker, so it takes the same default the main
-    // window's select opens on: mic mixed with system audio, which is the only
-    // mode that hears both sides of a broker call. `system:default` is present
-    // only where the backend can actually capture it (Windows).
-    mixSystemAudio = list.some((d) => d.id === 'system:default');
+    // window opens on — the richest mode this machine can actually run. Mic
+    // mixed with system audio where both exist, since that is the only mode
+    // that hears both sides of a broker call; system audio alone on a PC with
+    // no microphone, which used to fall through to `list[0]` and start a
+    // "mixed" capture on a mic that was not there.
+    const value = defaultCaptureValue(list);
+    deviceWarning = captureWarning(list);
+    if (!value) {
+      selectedDeviceId = null;
+      return;
+    }
+    const parsed = parseCaptureMode(value);
+    selectedDeviceId = parsed.deviceId;
+    mixSystemAudio = parsed.mixSystemAudio;
   } catch (err) {
     console.error('Widget list_devices error:', err);
   }

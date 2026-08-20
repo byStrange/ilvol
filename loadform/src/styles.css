@@ -1356,6 +1356,235 @@ body {
   font-weight: 600;
 }
 
+/* ─── Capture source picker (cards, not a dropdown) ─────────────────────── */
+/*
+ * Three modes, all visible at once, including the ones this machine cannot
+ * run. A disabled card is deliberately still legible — it is carrying the
+ * reason it is disabled ("No microphone detected on this PC."), which is the
+ * only place someone learns their PC has no mic.
+ */
+
+.lf-source-cards {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.lf-source-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.9rem;
+  background: rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  color: #e2e8f0;
+  cursor: pointer;
+  transition: border-color 0.18s, background-color 0.18s, transform 0.18s,
+    box-shadow 0.18s;
+}
+.lf-source-card:hover:not(.is-disabled):not(:disabled) {
+  border-color: rgba(148, 163, 184, 0.3);
+  background: rgba(2, 6, 23, 0.62);
+  transform: translateY(-1px);
+}
+.lf-source-card:focus-visible {
+  outline: none;
+  border-color: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18);
+}
+.lf-source-card.is-selected {
+  border-color: rgba(16, 185, 129, 0.55);
+  background: linear-gradient(
+    135deg,
+    rgba(16, 185, 129, 0.14),
+    rgba(2, 6, 23, 0.55) 60%
+  );
+  box-shadow: 0 10px 26px -18px rgba(16, 185, 129, 0.9);
+}
+.lf-source-card.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+  background: rgba(2, 6, 23, 0.28);
+  border-style: dashed;
+}
+/* Locked mid-capture: still readable, just not re-answerable. */
+.lf-source-card:disabled:not(.is-disabled) {
+  cursor: default;
+}
+
+.lf-source-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.6rem;
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  transition: background-color 0.18s, color 0.18s;
+}
+.lf-source-icon svg {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+.lf-source-card.is-selected .lf-source-icon {
+  background: rgba(16, 185, 129, 0.18);
+  color: #34d399;
+}
+
+.lf-source-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.lf-source-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #e2e8f0;
+}
+.lf-source-card.is-selected .lf-source-title {
+  color: #fff;
+}
+.lf-source-sub {
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #64748b;
+  overflow-wrap: anywhere;
+}
+.lf-source-badge {
+  flex: none;
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: 999px;
+  color: #34d399;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+
+/* The radio dot, drawn rather than borrowed from the platform. */
+.lf-source-mark {
+  flex: none;
+  margin-left: auto;
+  align-self: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border-radius: 999px;
+  border: 1.5px solid rgba(148, 163, 184, 0.35);
+  transition: border-color 0.18s, background-color 0.18s, box-shadow 0.18s;
+}
+.lf-source-card.is-selected .lf-source-mark {
+  border-color: #10b981;
+  background: radial-gradient(
+    circle,
+    #34d399 0 38%,
+    rgba(16, 185, 129, 0.12) 42%
+  );
+}
+.lf-source-card.is-disabled .lf-source-mark {
+  border-style: dashed;
+}
+
+.lf-source-loading {
+  font-size: 0.78rem;
+  color: #64748b;
+  padding: 0.8rem 0.9rem;
+  border-radius: 0.9rem;
+  border: 1px dashed rgba(148, 163, 184, 0.16);
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.lf-source-refresh {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #94a3b8;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.4);
+  transition: color 0.18s, border-color 0.18s, background-color 0.18s;
+}
+.lf-source-refresh:hover {
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.34);
+  background: rgba(2, 6, 23, 0.6);
+}
+
+/* What this PC cannot do, stated once above the cards. */
+.lf-source-warning {
+  font-size: 0.72rem;
+  line-height: 1.4;
+  color: #fcd34d;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: 0.7rem;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.6rem;
+}
+/* Nothing can be recorded at all — a different order of problem. */
+.lf-source-warning.is-critical {
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.24);
+}
+
+/* Which microphone — asked only when there is more than one to ask about. */
+.lf-mic-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-top: 0.6rem;
+}
+.lf-mic-picker-label {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+}
+.lf-mic-chips {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.lf-mic-chip {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  color: #94a3b8;
+  background: rgba(2, 6, 23, 0.45);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  cursor: pointer;
+  transition: color 0.18s, border-color 0.18s, background-color 0.18s;
+}
+.lf-mic-chip:hover:not(:disabled) {
+  color: #e2e8f0;
+  border-color: rgba(148, 163, 184, 0.3);
+}
+.lf-mic-chip.is-selected {
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.45);
+  background: rgba(16, 185, 129, 0.1);
+}
+.lf-mic-chip:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* ─── Toggle switches (real checkbox stays the source of truth) ─────────── */
 
 .lf-toggle-row {

@@ -1037,14 +1037,26 @@
               </summary>
               <div class="mt-4 space-y-4">
                 <div>
-                  <label class="block text-xs text-slate-400 mb-1.5 font-medium">What to capture</label>
-                  <!-- One control, one decision. Every option is a complete
+                  <div class="flex items-center justify-between mb-1.5">
+                    <label id="source-cards-label" class="block text-xs text-slate-400 font-medium">What to capture</label>
+                    <button type="button" id="device-refresh" class="lf-source-refresh">Refresh devices</button>
+                  </div>
+                  <!-- One control, one decision: every card is a complete
                        capture mode, so there is no second toggle that can
-                       disagree with what the select says. Built in JS by
-                       loadDevices(); see the value encoding there. -->
-                  <select id="device-select" class="lf-select">
-                    <option value="" disabled selected>Loading devices...</option>
-                  </select>
+                       disagree with it. Modes this machine cannot run are
+                       still drawn, greyed out and carrying the reason —
+                       a PC with no mic learns it has no mic instead of
+                       finding an empty picker. Built by renderSourcePicker()
+                       in main.js from buildCaptureModes() in audio-sources.js;
+                       the value encoding lives there too. -->
+                  <p id="device-warning" class="lf-source-warning hidden"></p>
+                  <div id="source-cards" class="lf-source-cards" role="radiogroup" aria-labelledby="source-cards-label">
+                    <p class="lf-source-loading">Looking for audio devices…</p>
+                  </div>
+                  <div id="mic-picker" class="lf-mic-picker hidden">
+                    <span class="lf-mic-picker-label">Microphone</span>
+                    <div id="mic-chips" class="lf-mic-chips"></div>
+                  </div>
                   <p id="device-hint" class="text-xs text-slate-500 mt-2 hidden"></p>
                 </div>
 

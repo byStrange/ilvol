@@ -150,14 +150,39 @@ pub fn list_audio_devices() -> Vec<AudioDevice> {
     let host = cpal::default_host();
 
     // Input devices (microphones)
-    if let Ok(input_devs) = host.input_devices() {
-        for (idx, device) in input_devs.enumerate() {
-            let name = device
-                .name()
-                .unwrap_or_else(|_| format!("Mic {}", idx + 1));
+    //
+    // An enumeration that fails used to be indistinguishable from a PC with no
+    // microphone: the `if let Ok` swallowed the error and the frontend was left
+    // reporting "no mics found" for what was really a WASAPI failure. It is
+    // still not fatal — system audio does not depend on it — but it is now at
+    // least visible in the log.
+    match host.input_devices() {
+        Ok(input_devs) => {
+            for (idx, device) in input_devs.enumerate() {
+                let name = device
+                    .name()
+                    .unwrap_or_else(|_| format!("Mic {}", idx + 1));
+                devices.push(AudioDevice {
+                    id: format!("mic:{}", idx),
+                    name,
+                    device_type: "microphone".to_string(),
+                });
+            }
+        }
+        Err(e) => eprintln!("[audio_capture] failed to enumerate input devices: {}", e),
+    }
+
+    // The host can refuse to enumerate — or enumerate to nothing — while still
+    // handing over a default input device. Windows does exactly this often
+    // enough to matter, and dropping the one working mic on the floor because
+    // the list came back empty is worse than offering it under its own name.
+    // `capture_mic` resolves an out-of-range index the same way, so `mic:0`
+    // here reaches the same device it does there.
+    if !devices.iter().any(|d| d.device_type == "microphone") {
+        if let Some(device) = host.default_input_device() {
             devices.push(AudioDevice {
-                id: format!("mic:{}", idx),
-                name,
+                id: "mic:0".to_string(),
+                name: device.name().unwrap_or_else(|_| "Default microphone".to_string()),
                 device_type: "microphone".to_string(),
             });
         }
@@ -545,14 +570,43 @@ async fn capture_mic(
     // future returned here is therefore Send and safe to tokio::spawn.
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let host = cpal::default_host();
-    let devices: Vec<_> = host
-        .input_devices()
-        .map_err(|e| format!("Failed to list input devices: {}", e))?
-        .collect();
+    // Not fatal on its own: a host that refuses to enumerate can still hand
+    // over a default input device, and the fallback below reaches it. Failing
+    // here instead would turn a recoverable WASAPI hiccup into "recording is
+    // broken" on a PC with a perfectly good mic attached.
+    let devices: Vec<_> = match host.input_devices() {
+        Ok(devs) => devs.collect(),
+        Err(e) => {
+            eprintln!("[audio_capture] failed to enumerate input devices: {}", e);
+            Vec::new()
+        }
+    };
 
-    let device = devices
-        .get(device_index)
-        .ok_or(format!("Mic device index {} not found", device_index))?;
+    // The default device is the fallback for an index that isn't there, which
+    // is the same case `list_audio_devices` covers when enumeration comes back
+    // empty on a PC that does have a working mic. Anything past index 0 is a
+    // real mismatch — the list the user picked from is stale — so it still
+    // errors, and the message says to refresh rather than naming an index.
+    let default_device;
+    let device = match devices.get(device_index) {
+        Some(d) => d,
+        None if device_index == 0 => {
+            default_device = host.default_input_device().ok_or_else(|| {
+                "No microphone available on this PC. If you meant to record the \
+                 call itself, pick \"Just what I hear\" to capture system audio."
+                    .to_string()
+            })?;
+            &default_device
+        }
+        None => {
+            return Err(format!(
+                "That microphone is no longer available (input {} of {}). \
+                 Press Refresh devices and pick it again.",
+                device_index + 1,
+                devices.len()
+            ))
+        }
+    };
 
     // Ask the device what it can actually do instead of assuming 16kHz mono.
     // This is the fix for the Windows "mic listed but never records" bug.
