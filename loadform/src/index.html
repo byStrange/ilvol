@@ -91,7 +91,10 @@
 
     <!-- Settings Modal -->
     <div id="settings-modal" class="fixed inset-0 z-40 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 hidden">
-      <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-sm">
+      <!-- Capped and scrolled like the organization modal below: the panel runs
+           usage, password and organization one under another, which is taller
+           than a short window and had no way to reach the bottom of. -->
+      <div class="glass-strong glass-lit rounded-2xl p-6 w-full max-w-sm max-h-[85vh] overflow-y-auto">
         <h2 class="text-lg font-bold text-white mb-4">Settings</h2>
 
         <div class="mb-4 p-3 rounded-xl bg-slate-950/40 border border-white/5">
